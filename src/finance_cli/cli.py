@@ -1,4 +1,13 @@
+from datetime import date
+
 import typer
+
+from finance_cli.analytics import validate_years
+from finance_cli.config import resolve_db_path
+from finance_cli.db import MetricsRepository
+from finance_cli.output import format_json, format_text
+from finance_cli.service import MetricsService
+from finance_cli.sources import fetch_gold_rows, fetch_index_pe_rows
 
 
 app = typer.Typer(help="Financial data CLI")
@@ -6,25 +15,74 @@ sync_app = typer.Typer(help="Synchronize local data")
 app.add_typer(sync_app, name="sync")
 
 
+def _service() -> MetricsService:
+    return MetricsService(MetricsRepository(resolve_db_path()))
+
+
 @app.command()
-def pe() -> None:
+def pe(
+    code: str = typer.Option(..., "--code"),
+    query_date: str = typer.Option(date.today().isoformat(), "--date"),
+    years: int = typer.Option(10, "--years"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     """Query index PE-TTM percentile."""
-    typer.echo("PE query is not implemented yet.")
+    try:
+        validate_years(years)
+        result = _service().query(
+            "index",
+            code,
+            "pe_ttm",
+            query_date,
+            years,
+            lambda: fetch_index_pe_rows(code),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
 
 
 @app.command()
-def gold() -> None:
+def gold(
+    query_date: str = typer.Option(date.today().isoformat(), "--date"),
+    years: int = typer.Option(10, "--years"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     """Query Au9999 gold close-price percentile."""
-    typer.echo("Gold query is not implemented yet.")
+    try:
+        validate_years(years)
+        result = _service().query(
+            "gold",
+            "AU9999",
+            "close",
+            query_date,
+            years,
+            fetch_gold_rows,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
 
 
 @sync_app.command("pe")
-def sync_pe() -> None:
+def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index PE-TTM history."""
-    typer.echo("PE sync is not implemented yet.")
+    try:
+        inserted = _service().sync(lambda: fetch_index_pe_rows(code))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
 
 
 @sync_app.command("gold")
 def sync_gold() -> None:
     """Synchronize Au9999 gold price history."""
-    typer.echo("Gold sync is not implemented yet.")
+    try:
+        inserted = _service().sync(fetch_gold_rows)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
