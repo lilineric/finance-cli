@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
@@ -18,6 +19,7 @@ class MetricsRepository:
         self.db_path = Path(db_path)
 
     def initialize(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -28,20 +30,26 @@ class MetricsRepository:
                     date TEXT NOT NULL,
                     value REAL NOT NULL,
                     source TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
                     PRIMARY KEY (asset_type, code, metric, date)
                 )
                 """
             )
 
-    def upsert_metrics(self, metrics: list[DailyMetric]) -> None:
+    def upsert_metrics(self, metrics: list[DailyMetric]) -> int:
+        if not metrics:
+            return 0
+
+        updated_at = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO daily_metrics (asset_type, code, metric, date, value, source)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO daily_metrics (asset_type, code, metric, date, value, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(asset_type, code, metric, date) DO UPDATE SET
                     value = excluded.value,
-                    source = excluded.source
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
                 """,
                 [
                     (
@@ -51,10 +59,13 @@ class MetricsRepository:
                         metric.date,
                         metric.value,
                         metric.source,
+                        updated_at,
                     )
                     for metric in metrics
                 ],
             )
+
+        return len(metrics)
 
     def latest_date_on_or_before(
         self,
