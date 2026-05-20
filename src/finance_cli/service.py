@@ -21,6 +21,7 @@ class MetricQueryResult:
     percentile: float
     sample_count: int
     source: str
+    lookback_years: int
 
 
 class MetricsService:
@@ -96,6 +97,7 @@ class MetricsService:
             percentile=calculate_percentile((row.value for row in rows), current_row.value),
             sample_count=len(rows),
             source=current_row.source,
+            lookback_years=validated_years,
         )
 
     def _has_local_data_on_or_after(

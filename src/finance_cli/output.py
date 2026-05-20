@@ -15,6 +15,7 @@ def format_json(result: MetricQueryResult) -> str:
             "percentile": round(result.percentile, 1),
             "sample_count": result.sample_count,
             "source": result.source,
+            "lookback_years": result.lookback_years,
         },
         ensure_ascii=False,
     )
@@ -30,6 +31,7 @@ def format_text(result: MetricQueryResult) -> str:
             f"实际数据日期: {result.actual_date}",
             f"指标: {result.metric}",
             f"数据源: {result.source}",
+            f"回看年数: {result.lookback_years}",
             f"{value_label}: {result.value}",
             f"历史百分位: {round(result.percentile, 1)}%",
             f"样本数: {result.sample_count}",

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from finance_cli.config import default_db_path, resolve_db_path
 
 

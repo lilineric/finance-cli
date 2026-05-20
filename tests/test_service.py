@@ -37,6 +37,7 @@ def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tm
         percentile=100.0,
         sample_count=1,
         source="test",
+        lookback_years=1,
     )
 
 
@@ -60,6 +61,7 @@ def test_query_fetches_missing_data_before_calculating(tmp_path):
     assert result.value == 540.0
     assert result.percentile == 100.0
     assert result.sample_count == 2
+    assert result.lookback_years == 1
 
 
 def test_query_uses_exact_local_date_without_fetching(tmp_path):
