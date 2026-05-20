@@ -1,3 +1,4 @@
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,50 +21,52 @@ class MetricsRepository:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS daily_metrics (
-                    asset_type TEXT NOT NULL,
-                    code TEXT NOT NULL,
-                    metric TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    value REAL NOT NULL,
-                    source TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (asset_type, code, metric, date)
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS daily_metrics (
+                        asset_type TEXT NOT NULL,
+                        code TEXT NOT NULL,
+                        metric TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        value REAL NOT NULL,
+                        source TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (asset_type, code, metric, date)
+                    )
+                    """
                 )
-                """
-            )
 
     def upsert_metrics(self, metrics: list[DailyMetric]) -> int:
         if not metrics:
             return 0
 
         updated_at = datetime.now(UTC).isoformat()
-        with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO daily_metrics (asset_type, code, metric, date, value, source, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(asset_type, code, metric, date) DO UPDATE SET
-                    value = excluded.value,
-                    source = excluded.source,
-                    updated_at = excluded.updated_at
-                """,
-                [
-                    (
-                        metric.asset_type,
-                        metric.code,
-                        metric.metric,
-                        metric.date,
-                        metric.value,
-                        metric.source,
-                        updated_at,
-                    )
-                    for metric in metrics
-                ],
-            )
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO daily_metrics (asset_type, code, metric, date, value, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(asset_type, code, metric, date) DO UPDATE SET
+                        value = excluded.value,
+                        source = excluded.source,
+                        updated_at = excluded.updated_at
+                    """,
+                    [
+                        (
+                            metric.asset_type,
+                            metric.code,
+                            metric.metric,
+                            metric.date,
+                            metric.value,
+                            metric.source,
+                            updated_at,
+                        )
+                        for metric in metrics
+                    ],
+                )
 
         return len(metrics)
 
@@ -74,7 +77,7 @@ class MetricsRepository:
         metric: str,
         query_date: str,
     ) -> str | None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute(
                 """
                 SELECT date
@@ -99,7 +102,7 @@ class MetricsRepository:
         start_date: str,
         end_date: str,
     ) -> list[DailyMetric]:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
                 """
                 SELECT asset_type, code, metric, date, value, source
