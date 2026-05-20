@@ -7,7 +7,7 @@ from finance_cli.db import DailyMetric
 
 
 INDEX_PE_DATE_COLUMNS = ("日期", "date", "trade_date")
-INDEX_PE_VALUE_COLUMNS = ("滚动市盈率", "市盈率TTM", "pe_ttm", "PE_TTM")
+INDEX_PE_VALUE_COLUMNS = ("市盈率2", "市盈率1", "滚动市盈率", "市盈率TTM", "pe_ttm", "PE_TTM")
 GOLD_DATE_COLUMNS = ("日期", "date", "trade_date")
 GOLD_CLOSE_COLUMNS = ("收盘价", "close", "收盘")
 
@@ -93,19 +93,44 @@ def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> 
 
 
 def _to_iso_date(value: object) -> str:
+    if _is_missing(value):
+        raise DataSourceError(f"Invalid date value: {value!r}")
     if isinstance(value, datetime):
         return value.date().isoformat()
     if isinstance(value, date):
         return value.isoformat()
 
     try:
-        return pd.to_datetime(value).date().isoformat()
+        parsed = pd.to_datetime(value)
     except Exception as exc:
         raise DataSourceError(f"Invalid date value: {value!r}") from exc
 
+    if _is_missing(parsed):
+        raise DataSourceError(f"Invalid date value: {value!r}")
+
+    return parsed.date().isoformat()
+
 
 def _to_float(value: object) -> float:
+    if _is_missing(value):
+        raise DataSourceError(f"Invalid numeric value: {value!r}")
+
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise DataSourceError(f"Invalid numeric value: {value!r}") from exc
+
+    if _is_missing(parsed):
+        raise DataSourceError(f"Invalid numeric value: {value!r}")
+
+    return parsed
+
+
+def _is_missing(value: object) -> bool:
+    if isinstance(value, str) and not value.strip():
+        return True
+
+    try:
+        return bool(pd.isna(value))
+    except TypeError:
+        return False
