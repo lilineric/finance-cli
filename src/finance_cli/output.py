@@ -23,8 +23,8 @@ def format_json(result: MetricQueryResult) -> str:
 
 
 def format_text(result: MetricQueryResult) -> str:
-    label = "指数" if result.asset_type == "index" else "黄金"
-    value_label = "PE-TTM" if result.metric == "pe_ttm" else "收盘价"
+    label = _asset_label(result.asset_type)
+    value_label = _metric_label(result.metric)
     return "\n".join(
         [
             f"{label}: {result.code}",
@@ -39,3 +39,22 @@ def format_text(result: MetricQueryResult) -> str:
             f"样本起始日期: {result.sample_start_date}",
         ]
     )
+
+
+def _asset_label(asset_type: str) -> str:
+    if asset_type == "gold":
+        return "黄金"
+    if asset_type == "bond":
+        return "债券"
+    return "指数"
+
+
+def _metric_label(metric: str) -> str:
+    labels = {
+        "pe_ttm": "PE-TTM",
+        "dividend_yield": "股息率",
+        "pb": "PB",
+        "yield": "收益率",
+        "close": "收盘价",
+    }
+    return labels.get(metric, metric)

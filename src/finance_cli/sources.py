@@ -8,8 +8,14 @@ from finance_cli.db import DailyMetric
 
 INDEX_PE_DATE_COLUMNS = ("日期", "date", "trade_date")
 INDEX_PE_VALUE_COLUMNS = ("市盈率2", "市盈率1", "滚动市盈率", "市盈率TTM", "pe_ttm", "PE_TTM")
+INDEX_DIVIDEND_YIELD_VALUE_COLUMNS = ("股息率2", "股息率1", "股息率", "dividend_yield")
+SW_INDEX_DATE_COLUMNS = ("发布日期", "日期", "date", "trade_date")
+SW_INDEX_CODE_COLUMNS = ("指数代码", "code", "index_code")
+SW_INDEX_PB_VALUE_COLUMNS = ("市净率", "pb", "PB")
 GOLD_DATE_COLUMNS = ("日期", "date", "trade_date")
 GOLD_CLOSE_COLUMNS = ("收盘价", "close", "收盘")
+CN10Y_YIELD_DATE_COLUMNS = ("日期", "date", "trade_date")
+CN10Y_YIELD_VALUE_COLUMNS = ("中国国债收益率10年", "中国10年期国债收益率", "cn10y", "yield")
 
 
 class DataSourceError(RuntimeError):
@@ -33,6 +39,47 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
     return normalize_index_pe_rows(code, frame)
 
 
+def fetch_index_dividend_yield_rows(
+    code: str,
+    fetcher: Callable[..., pd.DataFrame] | None = None,
+) -> list[DailyMetric]:
+    if fetcher is None:
+        try:
+            import akshare as ak
+        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
+            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+
+        fetcher = ak.stock_zh_index_value_csindex
+
+    try:
+        frame = fetcher(symbol=code)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch index dividend yield rows for {code}: {exc}") from exc
+
+    return normalize_index_dividend_yield_rows(code, frame)
+
+
+def fetch_sw_index_pb_rows(
+    code: str,
+    category: str,
+    fetcher: Callable[..., pd.DataFrame] | None = None,
+) -> list[DailyMetric]:
+    if fetcher is None:
+        try:
+            import akshare as ak
+        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
+            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+
+        fetcher = ak.index_analysis_daily_sw
+
+    try:
+        frame = fetcher(symbol=category, start_date="19900101", end_date=date.today().strftime("%Y%m%d"))
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch SW index PB rows for {code}: {exc}") from exc
+
+    return normalize_sw_index_pb_rows(code, category, frame)
+
+
 def fetch_gold_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
     if fetcher is None:
         try:
@@ -48,6 +95,23 @@ def fetch_gold_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -> list[
         raise DataSourceError(f"Failed to fetch gold rows: {exc}") from exc
 
     return normalize_gold_rows(frame)
+
+
+def fetch_cn10y_yield_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
+    if fetcher is None:
+        try:
+            import akshare as ak
+        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
+            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+
+        fetcher = ak.bond_zh_us_rate
+
+    try:
+        frame = fetcher(start_date="19901219")
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch CN10Y yield rows: {exc}") from exc
+
+    return normalize_cn10y_yield_rows(frame)
 
 
 def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
@@ -67,6 +131,44 @@ def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]
     ]
 
 
+def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
+    date_column = _first_existing_column(frame, INDEX_PE_DATE_COLUMNS)
+    value_column = _first_existing_column(frame, INDEX_DIVIDEND_YIELD_VALUE_COLUMNS)
+
+    return [
+        DailyMetric(
+            "index",
+            code,
+            "dividend_yield",
+            _to_iso_date(row[date_column]),
+            _to_float(row[value_column]),
+            "akshare",
+        )
+        for _, row in frame.iterrows()
+    ]
+
+
+def normalize_sw_index_pb_rows(code: str, category: str, frame: pd.DataFrame) -> list[DailyMetric]:
+    date_column = _first_existing_column(frame, SW_INDEX_DATE_COLUMNS)
+    code_column = _first_existing_column(frame, SW_INDEX_CODE_COLUMNS)
+    value_column = _first_existing_column(frame, SW_INDEX_PB_VALUE_COLUMNS)
+    matched = frame[frame[code_column].astype(str) == str(code)]
+    if matched.empty:
+        raise DataSourceError(f"No PB data found for SW index {code} in {category}")
+
+    return [
+        DailyMetric(
+            f"sw_index:{category}",
+            code,
+            "pb",
+            _to_iso_date(row[date_column]),
+            _to_float(row[value_column]),
+            "akshare",
+        )
+        for _, row in matched.iterrows()
+    ]
+
+
 def normalize_gold_rows(frame: pd.DataFrame) -> list[DailyMetric]:
     date_column = _first_existing_column(frame, GOLD_DATE_COLUMNS)
     value_column = _first_existing_column(frame, GOLD_CLOSE_COLUMNS)
@@ -76,6 +178,23 @@ def normalize_gold_rows(frame: pd.DataFrame) -> list[DailyMetric]:
             "gold",
             "AU9999",
             "close",
+            _to_iso_date(row[date_column]),
+            _to_float(row[value_column]),
+            "akshare",
+        )
+        for _, row in frame.iterrows()
+    ]
+
+
+def normalize_cn10y_yield_rows(frame: pd.DataFrame) -> list[DailyMetric]:
+    date_column = _first_existing_column(frame, CN10Y_YIELD_DATE_COLUMNS)
+    value_column = _first_existing_column(frame, CN10Y_YIELD_VALUE_COLUMNS)
+
+    return [
+        DailyMetric(
+            "bond",
+            "CN10Y",
+            "yield",
             _to_iso_date(row[date_column]),
             _to_float(row[value_column]),
             "akshare",

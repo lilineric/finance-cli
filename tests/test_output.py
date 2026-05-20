@@ -63,3 +63,13 @@ def test_format_text_includes_gold_close_labels_and_key_fields():
     assert "样本数: 2400" in text
     assert "样本起始日期: 2021-03-01" in text
     assert "回看年数: 5" in text
+
+
+def test_format_text_includes_new_metric_labels():
+    dividend = MetricQueryResult("index", "000300", "dividend_yield", "2026-04-20", "2026-04-17", "2020-01-02", 3.1, 70.0, 2000, "akshare", 10)
+    pb = MetricQueryResult("sw_index:一级行业", "801010", "pb", "2026-04-20", "2026-04-17", "2020-01-02", 1.8, 35.0, 2000, "akshare", 10)
+    cn10y = MetricQueryResult("bond", "CN10Y", "yield", "2026-04-20", "2026-04-17", "2020-01-02", 1.7, 20.0, 2000, "akshare", 10)
+
+    assert "股息率: 3.1" in format_text(dividend)
+    assert "PB: 1.8" in format_text(pb)
+    assert "收益率: 1.7" in format_text(cn10y)
