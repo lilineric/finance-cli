@@ -1,5 +1,7 @@
 from datetime import date
+from typing import Annotated
 
+import click
 import typer
 
 from finance_cli.analytics import validate_years
@@ -7,7 +9,7 @@ from finance_cli.config import resolve_db_path
 from finance_cli.db import MetricsRepository
 from finance_cli.output import format_json, format_text
 from finance_cli.service import MetricsService
-from finance_cli.sources import fetch_gold_rows, fetch_index_pe_rows
+from finance_cli.sources import DataSourceError, fetch_gold_rows, fetch_index_pe_rows
 
 
 app = typer.Typer(help="Financial data CLI")
@@ -21,8 +23,11 @@ def _service() -> MetricsService:
 
 @app.command()
 def pe(
+    query_date: Annotated[
+        str,
+        typer.Option("--date", default_factory=lambda: date.today().isoformat()),
+    ],
     code: str = typer.Option(..., "--code"),
-    query_date: str = typer.Option(date.today().isoformat(), "--date"),
     years: int = typer.Option(10, "--years"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -37,6 +42,8 @@ def pe(
             years,
             lambda: fetch_index_pe_rows(code),
         )
+    except DataSourceError as exc:
+        raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -45,7 +52,10 @@ def pe(
 
 @app.command()
 def gold(
-    query_date: str = typer.Option(date.today().isoformat(), "--date"),
+    query_date: Annotated[
+        str,
+        typer.Option("--date", default_factory=lambda: date.today().isoformat()),
+    ],
     years: int = typer.Option(10, "--years"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -60,6 +70,8 @@ def gold(
             years,
             fetch_gold_rows,
         )
+    except DataSourceError as exc:
+        raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -71,6 +83,8 @@ def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index PE-TTM history."""
     try:
         inserted = _service().sync(lambda: fetch_index_pe_rows(code))
+    except DataSourceError as exc:
+        raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -82,6 +96,8 @@ def sync_gold() -> None:
     """Synchronize Au9999 gold price history."""
     try:
         inserted = _service().sync(fetch_gold_rows)
+    except DataSourceError as exc:
+        raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 

@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from finance_cli.cli import app
 from finance_cli.service import MetricQueryResult
+from finance_cli.sources import DataSourceError
 
 
 runner = CliRunner()
@@ -88,6 +89,35 @@ def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "同步 3 条记录" in result.output
+
+
+def test_sync_gold_outputs_inserted_count(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+
+    def sync(self, fetch_rows):
+        return 4
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "gold"])
+
+    assert result.exit_code == 0
+    assert "同步 4 条记录" in result.output
+
+
+def test_cli_reports_data_source_errors(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        raise DataSourceError("source failed")
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold"])
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
+    assert "source failed" in result.output
 
 
 def test_cli_reports_validation_errors(monkeypatch, tmp_path):
