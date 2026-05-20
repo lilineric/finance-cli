@@ -58,6 +58,54 @@ def test_query_fetches_missing_data_before_calculating(tmp_path):
     assert result.sample_count == 2
 
 
+def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
+    repo = MetricsRepository(tmp_path / "finance.db")
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "000300", "pe_ttm", "2026-04-17", 10.0, "local"),
+        ]
+    )
+
+    result = service.query(
+        asset_type="index",
+        code="000300",
+        metric="pe_ttm",
+        requested_date="2026-04-20",
+        years=1,
+        fetch_missing=lambda: [
+            DailyMetric("index", "000300", "pe_ttm", "2026-04-20", 20.0, "remote"),
+            DailyMetric("index", "000300", "pe_ttm", "2026-04-21", 30.0, "remote"),
+        ],
+    )
+
+    assert result.actual_date == "2026-04-20"
+    assert result.value == 20.0
+    assert result.percentile == 100.0
+    assert result.sample_count == 2
+
+
+def test_sync_initializes_repository_and_returns_upsert_count(tmp_path):
+    repo = MetricsRepository(tmp_path / "finance.db")
+    service = MetricsService(repo)
+    calls = []
+
+    def fetch_rows():
+        calls.append("called")
+        return [
+            DailyMetric("gold", "AU9999", "close", "2026-04-20", 540.0, "test"),
+        ]
+
+    count = service.sync(fetch_rows)
+
+    assert count == 1
+    assert calls == ["called"]
+    assert (
+        repo.latest_date_on_or_before("gold", "AU9999", "close", "2026-04-20") == "2026-04-20"
+    )
+
+
 def test_query_raises_when_no_data_exists_after_fetch(tmp_path):
     repo = MetricsRepository(tmp_path / "finance.db")
     service = MetricsService(repo)

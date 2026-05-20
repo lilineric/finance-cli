@@ -52,7 +52,7 @@ class MetricsService:
             metric,
             requested_date_text,
         )
-        if actual_date is None:
+        if actual_date is None or actual_date < requested_date_text:
             self.repository.upsert_metrics(list(fetch_missing()))
             actual_date = self.repository.latest_date_on_or_before(
                 asset_type,
