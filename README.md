@@ -36,6 +36,7 @@ finance sync gold
 ```
 
 Query commands auto-refresh local data when needed.
+Percentiles use available local or source samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.
 
 ## Database
 

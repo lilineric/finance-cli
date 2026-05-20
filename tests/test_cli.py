@@ -29,6 +29,7 @@ def test_pe_command_outputs_json(monkeypatch, tmp_path):
             metric,
             requested_date,
             "2026-04-17",
+            "2020-01-02",
             12.34,
             42.8,
             2000,
@@ -48,6 +49,7 @@ def test_pe_command_outputs_json(monkeypatch, tmp_path):
     assert payload["code"] == "000300"
     assert payload["metric"] == "pe_ttm"
     assert payload["lookback_years"] == 10
+    assert payload["sample_start_date"] == "2020-01-02"
 
 
 def test_gold_command_outputs_text(monkeypatch, tmp_path):
@@ -60,6 +62,7 @@ def test_gold_command_outputs_text(monkeypatch, tmp_path):
             metric,
             requested_date,
             "2026-04-17",
+            "2021-03-01",
             535.2,
             80.0,
             2400,

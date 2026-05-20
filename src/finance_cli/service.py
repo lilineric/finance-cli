@@ -17,6 +17,7 @@ class MetricQueryResult:
     metric: str
     requested_date: str
     actual_date: str
+    sample_start_date: str
     value: float
     percentile: float
     sample_count: int
@@ -93,6 +94,7 @@ class MetricsService:
             metric=metric,
             requested_date=requested_date_text,
             actual_date=current_row.date,
+            sample_start_date=rows[0].date,
             value=current_row.value,
             percentile=calculate_percentile((row.value for row in rows), current_row.value),
             sample_count=len(rows),

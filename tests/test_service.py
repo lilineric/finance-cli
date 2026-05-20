@@ -33,6 +33,7 @@ def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tm
         metric="pe_ttm",
         requested_date="2026-04-19",
         actual_date="2026-04-17",
+        sample_start_date="2026-04-17",
         value=10.0,
         percentile=100.0,
         sample_count=1,
@@ -58,6 +59,7 @@ def test_query_fetches_missing_data_before_calculating(tmp_path):
     )
 
     assert result.actual_date == "2026-04-20"
+    assert result.sample_start_date == "2026-04-17"
     assert result.value == 540.0
     assert result.percentile == 100.0
     assert result.sample_count == 2
@@ -85,6 +87,7 @@ def test_query_uses_exact_local_date_without_fetching(tmp_path):
     )
 
     assert result.actual_date == "2026-04-20"
+    assert result.sample_start_date == "2026-04-17"
     assert result.value == 20.0
     assert result.sample_count == 2
 
@@ -112,6 +115,7 @@ def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
     )
 
     assert result.actual_date == "2026-04-20"
+    assert result.sample_start_date == "2026-04-17"
     assert result.value == 20.0
     assert result.percentile == 100.0
     assert result.sample_count == 2

@@ -5,7 +5,7 @@ from finance_cli.service import MetricQueryResult
 
 
 def test_format_json_uses_stable_keys():
-    result = MetricQueryResult("index", "000300", "pe_ttm", "2026-04-20", "2026-04-17", 12.34, 42.8, 2000, "akshare", 10)
+    result = MetricQueryResult("index", "000300", "pe_ttm", "2026-04-20", "2026-04-17", "2020-01-02", 12.34, 42.8, 2000, "akshare", 10)
 
     payload = json.loads(format_json(result))
 
@@ -15,6 +15,7 @@ def test_format_json_uses_stable_keys():
         "metric",
         "requested_date",
         "actual_date",
+        "sample_start_date",
         "value",
         "percentile",
         "sample_count",
@@ -26,6 +27,7 @@ def test_format_json_uses_stable_keys():
     assert payload["metric"] == "pe_ttm"
     assert payload["requested_date"] == "2026-04-20"
     assert payload["actual_date"] == "2026-04-17"
+    assert payload["sample_start_date"] == "2020-01-02"
     assert payload["value"] == 12.34
     assert payload["percentile"] == 42.8
     assert payload["sample_count"] == 2000
@@ -34,7 +36,7 @@ def test_format_json_uses_stable_keys():
 
 
 def test_format_text_includes_index_pe_labels_and_key_fields():
-    result = MetricQueryResult("index", "000300", "pe_ttm", "2026-04-20", "2026-04-17", 12.34, 42.8, 2000, "akshare", 10)
+    result = MetricQueryResult("index", "000300", "pe_ttm", "2026-04-20", "2026-04-17", "2020-01-02", 12.34, 42.8, 2000, "akshare", 10)
 
     text = format_text(result)
 
@@ -44,11 +46,12 @@ def test_format_text_includes_index_pe_labels_and_key_fields():
     assert "PE-TTM: 12.34" in text
     assert "历史百分位: 42.8%" in text
     assert "样本数: 2000" in text
+    assert "样本起始日期: 2020-01-02" in text
     assert "回看年数: 10" in text
 
 
 def test_format_text_includes_gold_close_labels_and_key_fields():
-    result = MetricQueryResult("gold", "AU9999", "close", "2026-04-20", "2026-04-17", 535.2, 80.0, 2400, "akshare", 5)
+    result = MetricQueryResult("gold", "AU9999", "close", "2026-04-20", "2026-04-17", "2021-03-01", 535.2, 80.0, 2400, "akshare", 5)
 
     text = format_text(result)
 
@@ -58,4 +61,5 @@ def test_format_text_includes_gold_close_labels_and_key_fields():
     assert "收盘价: 535.2" in text
     assert "历史百分位: 80.0%" in text
     assert "样本数: 2400" in text
+    assert "样本起始日期: 2021-03-01" in text
     assert "回看年数: 5" in text

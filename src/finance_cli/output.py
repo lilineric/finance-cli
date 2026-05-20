@@ -11,6 +11,7 @@ def format_json(result: MetricQueryResult) -> str:
             "metric": result.metric,
             "requested_date": result.requested_date,
             "actual_date": result.actual_date,
+            "sample_start_date": result.sample_start_date,
             "value": result.value,
             "percentile": round(result.percentile, 1),
             "sample_count": result.sample_count,
@@ -35,5 +36,6 @@ def format_text(result: MetricQueryResult) -> str:
             f"{value_label}: {result.value}",
             f"历史百分位: {round(result.percentile, 1)}%",
             f"样本数: {result.sample_count}",
+            f"样本起始日期: {result.sample_start_date}",
         ]
     )
