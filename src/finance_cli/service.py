@@ -52,7 +52,12 @@ class MetricsService:
             metric,
             requested_date_text,
         )
-        if actual_date is None or actual_date < requested_date_text:
+        if actual_date is None or not self._has_local_data_on_or_after(
+            asset_type,
+            code,
+            metric,
+            requested_date_text,
+        ):
             self.repository.upsert_metrics(list(fetch_missing()))
             actual_date = self.repository.latest_date_on_or_before(
                 asset_type,
@@ -91,4 +96,21 @@ class MetricsService:
             percentile=calculate_percentile((row.value for row in rows), current_row.value),
             sample_count=len(rows),
             source=current_row.source,
+        )
+
+    def _has_local_data_on_or_after(
+        self,
+        asset_type: str,
+        code: str,
+        metric: str,
+        requested_date: str,
+    ) -> bool:
+        return bool(
+            self.repository.metrics_between(
+                asset_type,
+                code,
+                metric,
+                requested_date,
+                "9999-12-31",
+            )
         )

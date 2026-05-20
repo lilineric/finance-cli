@@ -2,6 +2,10 @@ from finance_cli.db import DailyMetric, MetricsRepository
 from finance_cli.service import MetricQueryResult, MetricsService
 
 
+def fail_fetch():
+    raise AssertionError("fetch_missing should not be called")
+
+
 def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tmp_path):
     repo = MetricsRepository(tmp_path / "finance.db")
     service = MetricsService(repo)
@@ -20,7 +24,7 @@ def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tm
         metric="pe_ttm",
         requested_date="2026-04-19",
         years=1,
-        fetch_missing=lambda: [],
+        fetch_missing=fail_fetch,
     )
 
     assert result == MetricQueryResult(
@@ -55,6 +59,31 @@ def test_query_fetches_missing_data_before_calculating(tmp_path):
     assert result.actual_date == "2026-04-20"
     assert result.value == 540.0
     assert result.percentile == 100.0
+    assert result.sample_count == 2
+
+
+def test_query_uses_exact_local_date_without_fetching(tmp_path):
+    repo = MetricsRepository(tmp_path / "finance.db")
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "000300", "pe_ttm", "2026-04-17", 10.0, "local"),
+            DailyMetric("index", "000300", "pe_ttm", "2026-04-20", 20.0, "local"),
+        ]
+    )
+
+    result = service.query(
+        asset_type="index",
+        code="000300",
+        metric="pe_ttm",
+        requested_date="2026-04-20",
+        years=1,
+        fetch_missing=fail_fetch,
+    )
+
+    assert result.actual_date == "2026-04-20"
+    assert result.value == 20.0
     assert result.sample_count == 2
 
 
