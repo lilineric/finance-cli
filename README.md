@@ -10,22 +10,26 @@ python -m pip install -e ".[dev]"
 
 ## Commands
 
-Query index PE-TTM percentile:
+Query index rolling PE percentile:
 
 ```bash
 finance pe --code 000300 --date 2026-04-20 --years 10
 ```
 
-Query index dividend-yield percentile:
+Rolling PE uses the CSIndex historical `滚动市盈率` field and is stored as `rolling_pe`.
+
+Query index dividend-yield value:
 
 ```bash
-finance dividend-yield --code 000300 --date 2026-04-20 --years 10
+finance dividend-yield --code 000300 --date 2026-04-20
 ```
 
-Query SW index PB percentile:
+Index dividend-yield returns the current value only; it does not calculate a historical percentile.
+
+Query SW index PB value:
 
 ```bash
-finance pb --code 801010 --category 一级行业 --date 2026-04-20 --years 10
+finance pb --code 801010 --category 一级行业 --date 2026-04-20
 ```
 
 Query Shanghai Gold Exchange Au9999 close-price percentile:
@@ -57,8 +61,9 @@ finance sync cn10y-yield
 ```
 
 Query commands auto-refresh local data when needed.
-Percentiles use available local or source samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.
-PB uses the SW index analysis source and requires `--category`: `市场表征`, `一级行业`, `二级行业`, or `风格指数`.
+Percentiles use samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.
+PB and index dividend-yield return single values only; their output omits percentile, lookback years, sample count, and sample start date.
+PB returns the current value only and uses the SW index analysis source. It requires `--category`: `市场表征`, `一级行业`, `二级行业`, or `风格指数`.
 
 ## Database
 

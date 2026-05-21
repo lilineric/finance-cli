@@ -4,11 +4,12 @@ from typing import Callable
 
 import pandas as pd
 
+from finance_cli.analytics import parse_query_date, start_date_for_years
 from finance_cli.db import DailyMetric
 
 
 INDEX_PE_DATE_COLUMNS = ("日期", "date", "trade_date")
-INDEX_PE_VALUE_COLUMNS = ("市盈率2", "市盈率1", "滚动市盈率", "市盈率TTM", "pe_ttm", "PE_TTM")
+INDEX_PE_VALUE_COLUMNS = ("滚动市盈率", "市盈率TTM")
 INDEX_DIVIDEND_YIELD_VALUE_COLUMNS = ("股息率2", "股息率1", "股息率", "dividend_yield")
 SW_INDEX_DATE_COLUMNS = ("发布日期", "日期", "date", "trade_date")
 SW_INDEX_CODE_COLUMNS = ("指数代码", "code", "index_code")
@@ -31,10 +32,15 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
         except Exception as exc:  # pragma: no cover - depends on optional runtime environment
             raise DataSourceError(f"Failed to import akshare: {exc}") from exc
 
-        fetcher = ak.stock_zh_index_value_csindex
+        fetcher = ak.stock_zh_index_hist_csindex
 
     try:
-        frame = fetcher(symbol=normalized_code)
+        today = date.today()
+        frame = fetcher(
+            symbol=normalized_code,
+            start_date=start_date_for_years(today, 10).strftime("%Y%m%d"),
+            end_date=today.strftime("%Y%m%d"),
+        )
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
 
@@ -44,6 +50,7 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
 def fetch_index_dividend_yield_rows(
     code: str,
     fetcher: Callable[..., pd.DataFrame] | None = None,
+    query_date: str | None = None,
 ) -> list[DailyMetric]:
     normalized_code = normalize_csindex_code(code)
     if fetcher is None:
@@ -59,7 +66,17 @@ def fetch_index_dividend_yield_rows(
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index dividend yield rows for {code}: {exc}") from exc
 
-    return normalize_index_dividend_yield_rows(normalized_code, frame)
+    rows = normalize_index_dividend_yield_rows(normalized_code, frame)
+    if query_date is None:
+        return rows
+
+    requested_date = parse_query_date(query_date).isoformat()
+    eligible_rows = [row for row in rows if row.date <= requested_date]
+    if not eligible_rows:
+        raise DataSourceError(
+            f"No dividend yield data found for index {normalized_code} on or before {requested_date}"
+        )
+    return [max(eligible_rows, key=lambda row: row.date)]
 
 
 def normalize_csindex_code(code: str) -> str:
@@ -75,6 +92,7 @@ def fetch_sw_index_pb_rows(
     code: str,
     category: str,
     fetcher: Callable[..., pd.DataFrame] | None = None,
+    query_date: str | None = None,
 ) -> list[DailyMetric]:
     if fetcher is None:
         try:
@@ -85,7 +103,14 @@ def fetch_sw_index_pb_rows(
         fetcher = ak.index_analysis_daily_sw
 
     try:
-        frame = fetcher(symbol=category, start_date="19900101", end_date=date.today().strftime("%Y%m%d"))
+        if query_date is None:
+            start_date = "19900101"
+            end_date = date.today().strftime("%Y%m%d")
+        else:
+            requested_date = parse_query_date(query_date).strftime("%Y%m%d")
+            start_date = requested_date
+            end_date = requested_date
+        frame = fetcher(symbol=category, start_date=start_date, end_date=end_date)
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch SW index PB rows for {code}: {exc}") from exc
 
@@ -134,7 +159,7 @@ def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]
         DailyMetric(
             "index",
             code,
-            "pe_ttm",
+            "rolling_pe",
             _to_iso_date(row[date_column]),
             _to_float(row[value_column]),
             "akshare",
@@ -202,6 +227,14 @@ def normalize_cn10y_yield_rows(frame: pd.DataFrame) -> list[DailyMetric]:
     date_column = _first_existing_column(frame, CN10Y_YIELD_DATE_COLUMNS)
     value_column = _first_existing_column(frame, CN10Y_YIELD_VALUE_COLUMNS)
 
+    rows = [
+        row
+        for _, row in frame.iterrows()
+        if not _is_missing(row[date_column]) and not _is_missing(row[value_column])
+    ]
+    if not rows:
+        raise DataSourceError("No valid CN10Y yield data")
+
     return [
         DailyMetric(
             "bond",
@@ -211,7 +244,7 @@ def normalize_cn10y_yield_rows(frame: pd.DataFrame) -> list[DailyMetric]:
             _to_float(row[value_column]),
             "akshare",
         )
-        for _, row in frame.iterrows()
+        for row in rows
     ]
 
 

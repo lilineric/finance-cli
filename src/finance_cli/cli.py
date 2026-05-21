@@ -40,17 +40,18 @@ def pe(
     years: int = typer.Option(10, "--years"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Query index PE-TTM percentile."""
+    """Query index rolling PE percentile."""
     try:
         validate_years(years)
         normalized_code = normalize_csindex_code(code)
         result = _service().query(
             "index",
             normalized_code,
-            "pe_ttm",
+            "rolling_pe",
             query_date,
             years,
             lambda: fetch_index_pe_rows(normalized_code),
+            ensure_lookback_coverage=True,
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -67,20 +68,17 @@ def dividend_yield(
         typer.Option("--date", default_factory=lambda: date.today().isoformat()),
     ],
     code: str = typer.Option(..., "--code"),
-    years: int = typer.Option(10, "--years"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Query index dividend-yield percentile."""
+    """Query index dividend-yield value."""
     try:
-        validate_years(years)
         normalized_code = normalize_csindex_code(code)
-        result = _service().query(
+        result = _service().query_value(
             "index",
             normalized_code,
             "dividend_yield",
             query_date,
-            years,
-            lambda: fetch_index_dividend_yield_rows(normalized_code),
+            lambda: fetch_index_dividend_yield_rows(normalized_code, query_date=query_date),
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -98,20 +96,17 @@ def pb(
     ],
     code: str = typer.Option(..., "--code"),
     category: str = typer.Option(..., "--category"),
-    years: int = typer.Option(10, "--years"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Query SW index PB percentile."""
+    """Query SW index PB value."""
     try:
-        validate_years(years)
         _validate_sw_category(category)
-        result = _service().query(
+        result = _service().query_value(
             f"sw_index:{category}",
             code,
             "pb",
             query_date,
-            years,
-            lambda: fetch_sw_index_pb_rows(code, category),
+            lambda: fetch_sw_index_pb_rows(code, category, query_date=query_date),
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -179,7 +174,7 @@ def cn10y_yield(
 
 @sync_app.command("pe")
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
-    """Synchronize index PE-TTM history."""
+    """Synchronize index rolling PE history."""
     try:
         normalized_code = normalize_csindex_code(code)
         inserted = _service().sync(lambda: fetch_index_pe_rows(normalized_code))

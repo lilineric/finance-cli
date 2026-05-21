@@ -25,7 +25,8 @@ def test_cli_help_shows_commands():
 def test_pe_command_outputs_json(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
 
-    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing, ensure_lookback_coverage=False):
+        assert ensure_lookback_coverage is True
         return MetricQueryResult(
             asset_type,
             code,
@@ -50,7 +51,7 @@ def test_pe_command_outputs_json(monkeypatch, tmp_path):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["code"] == "000300"
-    assert payload["metric"] == "pe_ttm"
+    assert payload["metric"] == "rolling_pe"
     assert payload["lookback_years"] == 10
     assert payload["sample_start_date"] == "2020-01-02"
 
@@ -59,7 +60,8 @@ def test_pe_command_normalizes_exchange_prefixed_code(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
-    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing, ensure_lookback_coverage=False):
+        assert ensure_lookback_coverage is True
         seen["code"] = code
         return MetricQueryResult(
             asset_type,
@@ -114,22 +116,29 @@ def test_gold_command_outputs_text(monkeypatch, tmp_path):
 def test_dividend_yield_command_outputs_json(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
 
-    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+    def query_value(
+        self,
+        asset_type,
+        code,
+        metric,
+        requested_date,
+        fetch_missing,
+    ):
         return MetricQueryResult(
             asset_type,
             code,
             metric,
             requested_date,
             "2026-04-17",
-            "2020-01-02",
+            None,
             3.1,
-            70.0,
-            2000,
+            None,
+            None,
             "akshare",
-            years,
+            None,
         )
 
-    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
 
     result = runner.invoke(
         app,
@@ -140,27 +149,46 @@ def test_dividend_yield_command_outputs_json(monkeypatch, tmp_path):
     payload = json.loads(result.output)
     assert payload["code"] == "000300"
     assert payload["metric"] == "dividend_yield"
+    assert "percentile" not in payload
+    assert "lookback_years" not in payload
+    assert "sample_count" not in payload
+    assert "sample_start_date" not in payload
+
+
+def test_dividend_yield_command_rejects_years(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+
+    result = runner.invoke(app, ["dividend-yield", "--code", "000300", "--years", "10"])
+
+    assert result.exit_code != 0
 
 
 def test_pb_command_outputs_text(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
 
-    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+    def query_value(
+        self,
+        asset_type,
+        code,
+        metric,
+        requested_date,
+        fetch_missing,
+    ):
         return MetricQueryResult(
             asset_type,
             code,
             metric,
             requested_date,
             "2026-04-17",
-            "2020-01-02",
+            None,
             1.8,
-            35.0,
-            2000,
+            None,
+            None,
             "akshare",
-            years,
+            None,
         )
 
-    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
 
     result = runner.invoke(
         app,
@@ -170,6 +198,18 @@ def test_pb_command_outputs_text(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "801010" in result.output
     assert "PB: 1.8" in result.output
+    assert "历史百分位" not in result.output
+    assert "回看年数" not in result.output
+    assert "样本数" not in result.output
+    assert "样本起始日期" not in result.output
+
+
+def test_pb_command_rejects_years(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+
+    result = runner.invoke(app, ["pb", "--code", "801010", "--category", "一级行业", "--years", "10"])
+
+    assert result.exit_code != 0
 
 
 def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):

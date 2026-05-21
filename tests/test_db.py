@@ -12,12 +12,12 @@ def test_repository_upserts_and_queries_latest_date(tmp_path):
     assert repo.upsert_metrics([]) == 0
     assert repo.upsert_metrics(
         [
-            DailyMetric("index", "000300", "pe_ttm", "2026-04-17", 12.3, "test"),
-            DailyMetric("index", "000300", "pe_ttm", "2026-04-20", 12.8, "test"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-04-17", 12.3, "test"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-04-20", 12.8, "test"),
         ]
     ) == 2
 
-    assert repo.latest_date_on_or_before("index", "000300", "pe_ttm", "2026-04-19") == "2026-04-17"
+    assert repo.latest_date_on_or_before("index", "000300", "rolling_pe", "2026-04-19") == "2026-04-17"
 
 
 def test_repository_range_query_excludes_future_rows(tmp_path):
@@ -43,7 +43,7 @@ def test_repository_upsert_replaces_existing_value(tmp_path):
     repo = MetricsRepository(db_path)
     repo.initialize()
 
-    repo.upsert_metrics([DailyMetric("index", "000300", "pe_ttm", "2026-04-20", 12.8, "first")])
+    repo.upsert_metrics([DailyMetric("index", "000300", "rolling_pe", "2026-04-20", 12.8, "first")])
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -51,12 +51,12 @@ def test_repository_upsert_replaces_existing_value(tmp_path):
             SET updated_at = ?
             WHERE asset_type = ? AND code = ? AND metric = ? AND date = ?
             """,
-            ("old-timestamp", "index", "000300", "pe_ttm", "2026-04-20"),
+            ("old-timestamp", "index", "000300", "rolling_pe", "2026-04-20"),
         )
 
-    repo.upsert_metrics([DailyMetric("index", "000300", "pe_ttm", "2026-04-20", 13.1, "second")])
+    repo.upsert_metrics([DailyMetric("index", "000300", "rolling_pe", "2026-04-20", 13.1, "second")])
 
-    rows = repo.metrics_between("index", "000300", "pe_ttm", "2026-04-20", "2026-04-20")
+    rows = repo.metrics_between("index", "000300", "rolling_pe", "2026-04-20", "2026-04-20")
 
     assert len(rows) == 1
     assert rows[0].value == 13.1
@@ -69,7 +69,7 @@ def test_repository_upsert_replaces_existing_value(tmp_path):
             FROM daily_metrics
             WHERE asset_type = ? AND code = ? AND metric = ? AND date = ?
             """,
-            ("index", "000300", "pe_ttm", "2026-04-20"),
+            ("index", "000300", "rolling_pe", "2026-04-20"),
         ).fetchone()
 
     assert row[0]
