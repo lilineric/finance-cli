@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import re
 from typing import Callable
 
@@ -107,10 +107,17 @@ def fetch_sw_index_pb_rows(
             start_date = "19900101"
             end_date = date.today().strftime("%Y%m%d")
         else:
-            requested_date = parse_query_date(query_date).strftime("%Y%m%d")
-            start_date = requested_date
-            end_date = requested_date
+            parsed_requested_date = parse_query_date(query_date)
+            start_date = (parsed_requested_date - timedelta(days=10)).strftime("%Y%m%d")
+            end_date = parsed_requested_date.strftime("%Y%m%d")
         frame = fetcher(symbol=category, start_date=start_date, end_date=end_date)
+    except KeyError as exc:
+        if query_date is not None and str(exc).strip("'\"") == "发布日期":
+            requested_date = parse_query_date(query_date).isoformat()
+            raise DataSourceError(
+                f"No SW index PB data available on or before {requested_date}"
+            ) from exc
+        raise DataSourceError(f"Failed to fetch SW index PB rows for {code}: {exc}") from exc
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch SW index PB rows for {code}: {exc}") from exc
 

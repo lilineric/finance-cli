@@ -212,6 +212,21 @@ def test_pb_command_rejects_years(monkeypatch, tmp_path):
     assert result.exit_code != 0
 
 
+def test_pb_command_reports_missing_sw_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        raise DataSourceError("No PB data found for SW index 000300 in 一级行业")
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["pb", "--code", "000300", "--category", "一级行业"])
+
+    assert result.exit_code != 0
+    assert "No PB data found for SW index 000300 in 一级行业" in result.output
+    assert "发布日期" not in result.output
+
+
 def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
 

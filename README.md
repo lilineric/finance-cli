@@ -63,7 +63,7 @@ finance sync cn10y-yield
 Query commands auto-refresh local data when needed.
 Percentiles use samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.
 PB and index dividend-yield return single values only; their output omits percentile, lookback years, sample count, and sample start date.
-PB returns the current value only and uses the SW index analysis source. It requires `--category`: `市场表征`, `一级行业`, `二级行业`, or `风格指数`.
+PB returns the current value only and uses the SW index analysis source. It requires `--category`: `市场表征`, `一级行业`, `二级行业`, or `风格指数`; `--code` must be an SW index code in that category, such as `801010` for `一级行业`, not a CSIndex code such as `000300`.
 
 ## Database
 

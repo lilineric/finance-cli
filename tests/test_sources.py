@@ -220,10 +220,26 @@ def test_fetch_sw_index_pb_rows_uses_injected_fetcher_with_query_date():
 
     rows = fetch_sw_index_pb_rows("801010", "一级行业", query_date="2026-04-17", fetcher=fetcher)
 
-    assert calls == [{"symbol": "一级行业", "start_date": "20260417", "end_date": "20260417"}]
+    assert calls == [{"symbol": "一级行业", "start_date": "20260407", "end_date": "20260417"}]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("sw_index:一级行业", "801010", "pb", "2026-04-17", 1.8, "akshare"),
     ]
+
+
+def test_fetch_sw_index_pb_rows_wraps_akshare_empty_result_key_error():
+    def fetcher(**kwargs):
+        raise KeyError("发布日期")
+
+    with pytest.raises(DataSourceError, match="No SW index PB data available on or before 2026-05-22"):
+        fetch_sw_index_pb_rows("801010", "一级行业", query_date="2026-05-22", fetcher=fetcher)
+
+
+def test_fetch_sw_index_pb_rows_reports_code_missing_from_category():
+    def fetcher(**kwargs):
+        return pd.DataFrame({"发布日期": ["2026-05-20"], "指数代码": ["801010"], "市净率": [2.38]})
+
+    with pytest.raises(DataSourceError, match="No PB data found for SW index 000300 in 一级行业"):
+        fetch_sw_index_pb_rows("000300", "一级行业", query_date="2026-05-22", fetcher=fetcher)
 
 
 def test_fetch_sw_index_pb_rows_without_query_date_keeps_history_sync_window():
