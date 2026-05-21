@@ -55,6 +55,34 @@ def test_pe_command_outputs_json(monkeypatch, tmp_path):
     assert payload["sample_start_date"] == "2020-01-02"
 
 
+def test_pe_command_normalizes_exchange_prefixed_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+    seen = {}
+
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        seen["code"] = code
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-04-17",
+            "2020-01-02",
+            12.34,
+            42.8,
+            2000,
+            "akshare",
+            years,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["pe", "--code", "SH000300", "--json"])
+
+    assert result.exit_code == 0
+    assert seen["code"] == "000300"
+
+
 def test_gold_command_outputs_text(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
 

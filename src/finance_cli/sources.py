@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import re
 from typing import Callable
 
 import pandas as pd
@@ -23,6 +24,7 @@ class DataSourceError(RuntimeError):
 
 
 def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
+    normalized_code = normalize_csindex_code(code)
     if fetcher is None:
         try:
             import akshare as ak
@@ -32,17 +34,18 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
         fetcher = ak.stock_zh_index_value_csindex
 
     try:
-        frame = fetcher(symbol=code)
+        frame = fetcher(symbol=normalized_code)
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
 
-    return normalize_index_pe_rows(code, frame)
+    return normalize_index_pe_rows(normalized_code, frame)
 
 
 def fetch_index_dividend_yield_rows(
     code: str,
     fetcher: Callable[..., pd.DataFrame] | None = None,
 ) -> list[DailyMetric]:
+    normalized_code = normalize_csindex_code(code)
     if fetcher is None:
         try:
             import akshare as ak
@@ -52,11 +55,20 @@ def fetch_index_dividend_yield_rows(
         fetcher = ak.stock_zh_index_value_csindex
 
     try:
-        frame = fetcher(symbol=code)
+        frame = fetcher(symbol=normalized_code)
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index dividend yield rows for {code}: {exc}") from exc
 
-    return normalize_index_dividend_yield_rows(code, frame)
+    return normalize_index_dividend_yield_rows(normalized_code, frame)
+
+
+def normalize_csindex_code(code: str) -> str:
+    normalized = code.strip().upper()
+    if normalized.startswith(("SH", "SZ")):
+        normalized = normalized[2:]
+    if not re.fullmatch(r"\d{6}", normalized):
+        raise DataSourceError(f"Invalid index code: {code}")
+    return normalized
 
 
 def fetch_sw_index_pb_rows(

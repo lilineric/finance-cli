@@ -10,6 +10,7 @@ from finance_cli.sources import (
     fetch_index_dividend_yield_rows,
     fetch_index_pe_rows,
     fetch_sw_index_pb_rows,
+    normalize_csindex_code,
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
     normalize_index_dividend_yield_rows,
@@ -95,6 +96,24 @@ def test_fetch_index_pe_rows_uses_injected_fetcher_without_network():
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "000300", "pe_ttm", "2026-04-17", 12.3, "akshare"),
     ]
+
+
+def test_fetch_index_pe_rows_normalizes_exchange_prefixed_code():
+    calls = []
+
+    def fetcher(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame({"日期": ["2026-04-17"], "市盈率2": [12.3]})
+
+    rows = fetch_index_pe_rows("SH000300", fetcher=fetcher)
+
+    assert calls == [{"symbol": "000300"}]
+    assert rows[0].code == "000300"
+
+
+def test_normalize_csindex_code_rejects_invalid_code():
+    with pytest.raises(DataSourceError, match="Invalid index code"):
+        normalize_csindex_code("SH300")
 
 
 def test_fetch_gold_rows_uses_injected_fetcher_without_network():

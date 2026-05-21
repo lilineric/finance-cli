@@ -15,6 +15,7 @@ from finance_cli.sources import (
     fetch_gold_rows,
     fetch_index_dividend_yield_rows,
     fetch_index_pe_rows,
+    normalize_csindex_code,
     fetch_sw_index_pb_rows,
 )
 
@@ -42,13 +43,14 @@ def pe(
     """Query index PE-TTM percentile."""
     try:
         validate_years(years)
+        normalized_code = normalize_csindex_code(code)
         result = _service().query(
             "index",
-            code,
+            normalized_code,
             "pe_ttm",
             query_date,
             years,
-            lambda: fetch_index_pe_rows(code),
+            lambda: fetch_index_pe_rows(normalized_code),
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -71,13 +73,14 @@ def dividend_yield(
     """Query index dividend-yield percentile."""
     try:
         validate_years(years)
+        normalized_code = normalize_csindex_code(code)
         result = _service().query(
             "index",
-            code,
+            normalized_code,
             "dividend_yield",
             query_date,
             years,
-            lambda: fetch_index_dividend_yield_rows(code),
+            lambda: fetch_index_dividend_yield_rows(normalized_code),
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -178,7 +181,8 @@ def cn10y_yield(
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index PE-TTM history."""
     try:
-        inserted = _service().sync(lambda: fetch_index_pe_rows(code))
+        normalized_code = normalize_csindex_code(code)
+        inserted = _service().sync(lambda: fetch_index_pe_rows(normalized_code))
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
@@ -191,7 +195,8 @@ def sync_pe(code: str = typer.Option(..., "--code")) -> None:
 def sync_dividend_yield(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index dividend-yield history."""
     try:
-        inserted = _service().sync(lambda: fetch_index_dividend_yield_rows(code))
+        normalized_code = normalize_csindex_code(code)
+        inserted = _service().sync(lambda: fetch_index_dividend_yield_rows(normalized_code))
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
