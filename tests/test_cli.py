@@ -3,6 +3,7 @@ import json
 from typer.testing import CliRunner
 
 from finance_cli.cli import app
+from finance_cli.db import SQLiteApiError
 from finance_cli.service import MetricQueryResult
 from finance_cli.sources import DataSourceError
 
@@ -23,8 +24,6 @@ def test_cli_help_shows_commands():
 
 
 def test_pe_command_outputs_json(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query(
         self,
         asset_type,
@@ -68,7 +67,6 @@ def test_pe_command_outputs_json(monkeypatch, tmp_path):
 
 
 def test_pe_command_normalizes_exchange_prefixed_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query(
@@ -108,7 +106,6 @@ def test_pe_command_normalizes_exchange_prefixed_code(monkeypatch, tmp_path):
 
 
 def test_pe_command_accepts_ndx(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query(
@@ -148,7 +145,6 @@ def test_pe_command_accepts_ndx(monkeypatch, tmp_path):
 
 
 def test_pe_command_accepts_vn30(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query(
@@ -188,7 +184,6 @@ def test_pe_command_accepts_vn30(monkeypatch, tmp_path):
 
 
 def test_pe_command_accepts_h_prefixed_csindex_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query(
@@ -228,7 +223,6 @@ def test_pe_command_accepts_h_prefixed_csindex_code(monkeypatch, tmp_path):
 
 
 def test_pe_command_accepts_china_semiconductor_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query(
@@ -268,8 +262,6 @@ def test_pe_command_accepts_china_semiconductor_code(monkeypatch, tmp_path):
 
 
 def test_gold_command_outputs_text(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
         return MetricQueryResult(
             asset_type,
@@ -296,8 +288,6 @@ def test_gold_command_outputs_text(monkeypatch, tmp_path):
 
 
 def test_dividend_yield_command_outputs_json(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query_value(
         self,
         asset_type,
@@ -338,7 +328,6 @@ def test_dividend_yield_command_outputs_json(monkeypatch, tmp_path):
 
 
 def test_dividend_yield_command_accepts_h_prefixed_csindex_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query_value(
@@ -373,16 +362,12 @@ def test_dividend_yield_command_accepts_h_prefixed_csindex_code(monkeypatch, tmp
 
 
 def test_dividend_yield_command_rejects_years(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     result = runner.invoke(app, ["dividend-yield", "--code", "000300", "--years", "10"])
 
     assert result.exit_code != 0
 
 
 def test_dividend_yield_command_still_rejects_ndx(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     result = runner.invoke(app, ["dividend-yield", "--code", "NDX"])
 
     assert result.exit_code != 0
@@ -390,8 +375,6 @@ def test_dividend_yield_command_still_rejects_ndx(monkeypatch, tmp_path):
 
 
 def test_pb_command_outputs_text(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query_value(
         self,
         asset_type,
@@ -431,7 +414,6 @@ def test_pb_command_outputs_text(monkeypatch, tmp_path):
 
 
 def test_pb_command_without_category_queries_index_pb(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def query_value(
@@ -468,16 +450,12 @@ def test_pb_command_without_category_queries_index_pb(monkeypatch, tmp_path):
 
 
 def test_pb_command_rejects_years(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     result = runner.invoke(app, ["pb", "--code", "801010", "--category", "一级行业", "--years", "10"])
 
     assert result.exit_code != 0
 
 
 def test_pb_command_reports_missing_sw_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
         raise DataSourceError("No PB data found for SW index 000300 in 一级行业")
 
@@ -491,8 +469,6 @@ def test_pb_command_reports_missing_sw_code(monkeypatch, tmp_path):
 
 
 def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
         return MetricQueryResult(
             asset_type,
@@ -519,8 +495,6 @@ def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):
 
 
 def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def sync(self, fetch_rows):
         return 3
 
@@ -533,7 +507,6 @@ def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
 
 
 def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
     seen = {}
 
     def sync(self, fetch_rows):
@@ -557,8 +530,6 @@ def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
 
 
 def test_sync_gold_outputs_inserted_count(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def sync(self, fetch_rows):
         return 4
 
@@ -571,8 +542,6 @@ def test_sync_gold_outputs_inserted_count(monkeypatch, tmp_path):
 
 
 def test_sync_new_metrics_output_inserted_count(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def sync(self, fetch_rows):
         return 5
 
@@ -590,8 +559,6 @@ def test_sync_new_metrics_output_inserted_count(monkeypatch, tmp_path):
 
 
 def test_pb_rejects_invalid_category(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     result = runner.invoke(app, ["pb", "--code", "801010", "--category", "错误分类"])
 
     assert result.exit_code != 0
@@ -599,8 +566,6 @@ def test_pb_rejects_invalid_category(monkeypatch, tmp_path):
 
 
 def test_cli_reports_data_source_errors(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
-
     def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
         raise DataSourceError("source failed")
 
@@ -613,9 +578,20 @@ def test_cli_reports_data_source_errors(monkeypatch, tmp_path):
     assert "source failed" in result.output
 
 
-def test_cli_reports_validation_errors(monkeypatch, tmp_path):
-    monkeypatch.setenv("FINANCE_CLI_DB", str(tmp_path / "finance.db"))
+def test_cli_reports_sqlite_api_errors(monkeypatch, tmp_path):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        raise SQLiteApiError(500, "sqlite_error", "database is locked")
 
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold"])
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
+    assert "database is locked" in result.output
+
+
+def test_cli_reports_validation_errors(monkeypatch, tmp_path):
     result = runner.invoke(app, ["gold", "--years", "11"])
 
     assert result.exit_code != 0

@@ -1,15 +1,49 @@
-from finance_cli.config import default_db_path, resolve_db_path
+import json
+
+import pytest
+
+from finance_cli.config import (
+    DEFAULT_SQLITE_API_HOST,
+    DEFAULT_SQLITE_DB,
+    load_config,
+)
 
 
-def test_default_db_path_uses_home_directory(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("FINANCE_CLI_DB", raising=False)
+def test_load_config_uses_defaults_when_no_file_is_configured(monkeypatch):
+    monkeypatch.delenv("FINANCE_CLI_CONFIG", raising=False)
 
-    assert default_db_path() == tmp_path / ".finance-cli" / "finance.db"
+    config = load_config()
+
+    assert config.sqlite_api_host == DEFAULT_SQLITE_API_HOST
+    assert config.sqlite_db == DEFAULT_SQLITE_DB
 
 
-def test_resolve_db_path_uses_environment_override(monkeypatch, tmp_path):
-    custom = tmp_path / "custom.db"
-    monkeypatch.setenv("FINANCE_CLI_DB", str(custom))
+def test_load_config_uses_environment_config_file(monkeypatch, tmp_path):
+    config_path = tmp_path / "finance-cli.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sqlite_api_host": "http://127.0.0.1:8080/",
+                "sqlite_db": "finance.db",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FINANCE_CLI_CONFIG", str(config_path))
 
-    assert resolve_db_path() == custom
+    config = load_config()
+
+    assert config.sqlite_api_host == "http://127.0.0.1:8080"
+    assert config.sqlite_db == "finance.db"
+
+
+def test_load_config_rejects_empty_values(monkeypatch, tmp_path):
+    config_path = tmp_path / "finance-cli.json"
+    config_path.write_text(
+        json.dumps({"sqlite_api_host": " ", "sqlite_db": "finance.db"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FINANCE_CLI_CONFIG", str(config_path))
+
+    with pytest.raises(ValueError, match="sqlite_api_host"):
+        load_config()

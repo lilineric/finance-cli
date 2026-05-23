@@ -1,0 +1,4 @@
+{
+  "sqlite_api_host": "http://192.168.3.56:8080",
+  "sqlite_db": "finance.db"
+}

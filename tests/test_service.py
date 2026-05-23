@@ -1,4 +1,4 @@
-from finance_cli.db import DailyMetric, MetricsRepository
+from finance_cli.db import DailyMetric
 from finance_cli.service import MetricQueryResult, MetricsService
 
 
@@ -6,8 +6,46 @@ def fail_fetch():
     raise AssertionError("fetch_missing should not be called")
 
 
+class InMemoryMetricsRepository:
+    def __init__(self):
+        self.rows = {}
+
+    def initialize(self):
+        pass
+
+    def upsert_metrics(self, metrics):
+        for metric in metrics:
+            key = (metric.asset_type, metric.code, metric.metric, metric.date)
+            self.rows[key] = metric
+        return len(metrics)
+
+    def latest_date_on_or_before(self, asset_type, code, metric, query_date):
+        dates = [
+            row.date
+            for row in self.rows.values()
+            if row.asset_type == asset_type
+            and row.code == code
+            and row.metric == metric
+            and row.date <= query_date
+        ]
+        return max(dates) if dates else None
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        return sorted(
+            [
+                row
+                for row in self.rows.values()
+                if row.asset_type == asset_type
+                and row.code == code
+                and row.metric == metric
+                and start_date <= row.date <= end_date
+            ],
+            key=lambda row: row.date,
+        )
+
+
 def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -43,7 +81,7 @@ def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tm
 
 
 def test_query_fetches_missing_data_before_calculating(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
 
     result = service.query(
@@ -67,7 +105,7 @@ def test_query_fetches_missing_data_before_calculating(tmp_path):
 
 
 def test_query_uses_exact_local_date_without_fetching(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -93,7 +131,7 @@ def test_query_uses_exact_local_date_without_fetching(tmp_path):
 
 
 def test_query_can_refresh_when_local_lookback_coverage_is_incomplete(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -131,7 +169,7 @@ def test_query_can_refresh_when_local_lookback_coverage_is_incomplete(tmp_path):
 
 
 def test_query_accepts_lookback_start_on_next_trading_day(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -156,7 +194,7 @@ def test_query_accepts_lookback_start_on_next_trading_day(tmp_path):
 
 
 def test_query_uses_partial_coverage_when_minimum_lookback_is_available(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -196,7 +234,7 @@ def test_query_uses_partial_coverage_when_minimum_lookback_is_available(tmp_path
 
 
 def test_query_raises_when_refreshed_lookback_coverage_is_still_incomplete(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -232,7 +270,7 @@ def test_query_raises_when_refreshed_lookback_coverage_is_still_incomplete(tmp_p
 
 
 def test_query_value_uses_exact_local_date_without_percentile_fields(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -259,7 +297,7 @@ def test_query_value_uses_exact_local_date_without_percentile_fields(tmp_path):
 
 
 def test_query_value_refreshes_stale_local_data(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -291,7 +329,7 @@ def test_query_value_refreshes_stale_local_data(tmp_path):
 
 
 def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     repo.initialize()
     repo.upsert_metrics(
@@ -320,7 +358,7 @@ def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
 
 
 def test_sync_initializes_repository_and_returns_upsert_count(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
     calls = []
 
@@ -340,7 +378,7 @@ def test_sync_initializes_repository_and_returns_upsert_count(tmp_path):
 
 
 def test_query_raises_when_no_data_exists_after_fetch(tmp_path):
-    repo = MetricsRepository(tmp_path / "finance.db")
+    repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
 
     try:

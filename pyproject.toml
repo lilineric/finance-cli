@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "finance-cli"
 version = "0.1.0"
-description = "Financial data CLI backed by SQLite and akshare"
+description = "Financial data CLI backed by a SQLite API and akshare"
 requires-python = ">=3.11"
 dependencies = [
   "akshare>=1.16.0",

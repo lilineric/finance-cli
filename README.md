@@ -76,14 +76,20 @@ PB returns the current value only. Without `--category`, CSI `9xxxxx` index code
 
 ## Database
 
-By default, data is stored at:
+Data is stored in the SQLite API service. The default local config is:
 
-```text
-~/.finance-cli/finance.db
+```json
+{
+  "sqlite_api_host": "http://192.168.3.56:8080",
+  "sqlite_db": "finance.db"
+}
 ```
 
-Override the path with:
+Override the config file with:
 
 ```bash
-FINANCE_CLI_DB=/path/to/finance.db finance gold
+FINANCE_CLI_CONFIG=/path/to/config.json finance gold
 ```
+
+When deployed to the server, `scripts/deploy_to_server.sh` writes a server config using
+`http://127.0.0.1:8080`.

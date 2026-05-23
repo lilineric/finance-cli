@@ -5,8 +5,8 @@ import click
 import typer
 
 from finance_cli.analytics import validate_years
-from finance_cli.config import resolve_db_path
-from finance_cli.db import MetricsRepository
+from finance_cli.config import load_config
+from finance_cli.db import MetricsRepository, SQLiteApiError
 from finance_cli.output import format_json, format_text
 from finance_cli.service import MetricsService
 from finance_cli.sources import (
@@ -29,7 +29,8 @@ SW_INDEX_CATEGORIES = ("市场表征", "一级行业", "二级行业", "风格�
 
 
 def _service() -> MetricsService:
-    return MetricsService(MetricsRepository(resolve_db_path()))
+    config = load_config()
+    return MetricsService(MetricsRepository(config.sqlite_api_host, config.sqlite_db))
 
 
 @app.command()
@@ -56,7 +57,7 @@ def pe(
             ensure_lookback_coverage=True,
             minimum_lookback_years=3,
         )
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -83,7 +84,7 @@ def dividend_yield(
             query_date,
             lambda: fetch_index_dividend_yield_rows(normalized_code, query_date=query_date),
         )
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -120,7 +121,7 @@ def pb(
                 query_date,
                 lambda: fetch_sw_index_pb_rows(code, category, query_date=query_date),
             )
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -148,7 +149,7 @@ def gold(
             years,
             fetch_gold_rows,
         )
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -176,7 +177,7 @@ def cn10y_yield(
             years,
             fetch_cn10y_yield_rows,
         )
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -190,7 +191,7 @@ def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     try:
         normalized_code = normalize_index_pe_code(code)
         inserted = _service().sync(lambda: fetch_index_pe_rows(normalized_code))
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -204,7 +205,7 @@ def sync_dividend_yield(code: str = typer.Option(..., "--code")) -> None:
     try:
         normalized_code = normalize_csindex_code(code)
         inserted = _service().sync(lambda: fetch_index_dividend_yield_rows(normalized_code))
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -221,7 +222,7 @@ def sync_pb(
     try:
         _validate_sw_category(category)
         inserted = _service().sync(lambda: fetch_sw_index_pb_rows(code, category))
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -234,7 +235,7 @@ def sync_gold() -> None:
     """Synchronize Au9999 gold price history."""
     try:
         inserted = _service().sync(fetch_gold_rows)
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -247,7 +248,7 @@ def sync_cn10y_yield() -> None:
     """Synchronize China 10-year government bond yield history."""
     try:
         inserted = _service().sync(fetch_cn10y_yield_rows)
-    except DataSourceError as exc:
+    except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
