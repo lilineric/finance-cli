@@ -50,6 +50,31 @@ def test_format_text_includes_index_pe_labels_and_key_fields():
     assert "回看年数: 10" in text
 
 
+def test_format_output_marks_partial_coverage():
+    result = MetricQueryResult(
+        "index",
+        "990001",
+        "rolling_pe",
+        "2026-05-23",
+        "2026-05-22",
+        "2020-02-27",
+        114.73,
+        80.0,
+        1511,
+        "akshare",
+        10,
+        "partial",
+        6.2,
+    )
+
+    payload = json.loads(format_json(result))
+    text = format_text(result)
+
+    assert payload["coverage_status"] == "partial"
+    assert payload["effective_years"] == 6.2
+    assert "样本覆盖: 不足10年，使用全部可用数据，约6.2年" in text
+
+
 def test_format_text_includes_gold_close_labels_and_key_fields():
     result = MetricQueryResult("gold", "AU9999", "close", "2026-04-20", "2026-04-17", "2021-03-01", 535.2, 80.0, 2400, "akshare", 5)
 

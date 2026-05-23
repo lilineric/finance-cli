@@ -8,15 +8,23 @@ from finance_cli.sources import (
     fetch_cn10y_yield_rows,
     fetch_gold_rows,
     fetch_index_dividend_yield_rows,
+    fetch_index_pb_rows,
     fetch_index_pe_rows,
+    normalize_index_pe_code,
+    normalize_ndx_pe_rows,
     fetch_sw_index_pb_rows,
     normalize_csindex_code,
+    normalize_index_pb_rows_from_etf_run,
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
     normalize_index_dividend_yield_rows,
     normalize_index_pe_rows,
+    normalize_worldperatio_pe_rows,
     normalize_sw_index_pb_rows,
+    _fetch_text,
 )
+from io import BytesIO
+from urllib.error import HTTPError
 
 
 def test_normalize_index_pe_rows_accepts_common_akshare_columns():
@@ -35,6 +43,23 @@ def test_normalize_index_pe_rows_accepts_common_akshare_columns():
     ]
 
 
+def test_normalize_index_pe_rows_accepts_csindex_indicator_columns():
+    frame = pd.DataFrame(
+        {
+            "日期Date": [20260522, 20260521],
+            "市盈率1（总股本）P/E1": [119.66, 117.03],
+            "市盈率2（计算用股本）P/E2": [114.73, 111.75],
+        }
+    )
+
+    rows = normalize_index_pe_rows("990001", frame)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "990001", "rolling_pe", "2026-05-22", 114.73, "akshare"),
+        ("index", "990001", "rolling_pe", "2026-05-21", 111.75, "akshare"),
+    ]
+
+
 def test_normalize_index_pe_rows_prefers_rolling_pe():
     frame = pd.DataFrame(
         {
@@ -49,6 +74,19 @@ def test_normalize_index_pe_rows_prefers_rolling_pe():
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "000300", "rolling_pe", "2026-04-17", 14.2, "akshare"),
     ]
+
+
+def test_normalize_index_pe_rows_skips_missing_pe_values():
+    frame = pd.DataFrame(
+        {
+            "日期": ["2013-12-04", "2013-12-05"],
+            "滚动市盈率": [float("nan"), 7.36],
+        }
+    )
+
+    rows = normalize_index_pe_rows("H30269", frame)
+
+    assert [(row.code, row.date, row.value) for row in rows] == [("H30269", "2013-12-05", 7.36)]
 
 
 def test_normalize_gold_rows_accepts_common_akshare_columns():
@@ -83,13 +121,28 @@ def test_normalize_gold_rows_rejects_missing_numeric_values(numeric_value):
         normalize_gold_rows(frame)
 
 
-def test_fetch_index_pe_rows_uses_injected_fetcher_with_10_year_window(monkeypatch):
+def test_fetch_text_reads_http_error_body(monkeypatch):
+    def urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            500,
+            "Internal Server Error",
+            {},
+            BytesIO(b"detailPE_data = [[Date.UTC(2026, 4, 1),16.1419],];"),
+        )
+
+    monkeypatch.setattr("finance_cli.sources.urlopen", urlopen)
+
+    assert "detailPE_data" in _fetch_text("https://worldperatio.com/area/vietnam/")
+
+
+def test_fetch_index_pe_rows_uses_injected_csindex_history_fetcher(monkeypatch):
     calls = []
 
     class FixedDate(date):
         @classmethod
         def today(cls):
-            return cls(2026, 5, 21)
+            return cls(2026, 5, 22)
 
     def fetcher(**kwargs):
         calls.append(kwargs)
@@ -98,7 +151,7 @@ def test_fetch_index_pe_rows_uses_injected_fetcher_with_10_year_window(monkeypat
     monkeypatch.setattr("finance_cli.sources.date", FixedDate)
     rows = fetch_index_pe_rows("000300", fetcher=fetcher)
 
-    assert calls == [{"symbol": "000300", "start_date": "20160521", "end_date": "20260521"}]
+    assert calls == [{"symbol": "000300", "start_date": "19900101", "end_date": "20260522"}]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "000300", "rolling_pe", "2026-04-17", 12.3, "akshare"),
     ]
@@ -110,7 +163,7 @@ def test_fetch_index_pe_rows_normalizes_exchange_prefixed_code(monkeypatch):
     class FixedDate(date):
         @classmethod
         def today(cls):
-            return cls(2026, 5, 21)
+            return cls(2026, 5, 22)
 
     def fetcher(**kwargs):
         calls.append(kwargs)
@@ -119,8 +172,89 @@ def test_fetch_index_pe_rows_normalizes_exchange_prefixed_code(monkeypatch):
     monkeypatch.setattr("finance_cli.sources.date", FixedDate)
     rows = fetch_index_pe_rows("SH000300", fetcher=fetcher)
 
-    assert calls == [{"symbol": "000300", "start_date": "20160521", "end_date": "20260521"}]
+    assert calls == [{"symbol": "000300", "start_date": "19900101", "end_date": "20260522"}]
     assert rows[0].code == "000300"
+
+
+def test_fetch_index_pe_rows_accepts_h_prefixed_csindex_code(monkeypatch):
+    calls = []
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 5, 22)
+
+    def fetcher(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "日期": ["2026-05-22"],
+                "滚动市盈率": [7.82],
+            }
+        )
+
+    monkeypatch.setattr("finance_cli.sources.date", FixedDate)
+    rows = fetch_index_pe_rows("H30269", fetcher=fetcher)
+
+    assert calls == [{"symbol": "H30269", "start_date": "19900101", "end_date": "20260522"}]
+    assert [(row.code, row.date, row.value) for row in rows] == [("H30269", "2026-05-22", 7.82)]
+
+
+def test_fetch_index_pe_rows_supports_ndx_from_worldperatio_source():
+    calls = []
+
+    def fetcher():
+        calls.append("fetch")
+        return (
+            "detailPE_data = [[Date.UTC(2026, 3, 1),31.9623],[Date.UTC(2026, 4, 1),32.7202]];"
+            "other_data = [[Date.UTC(2026, 4, 1),11.6947]];"
+        )
+
+    rows = fetch_index_pe_rows("NDX", fetcher=fetcher)
+
+    assert calls == ["fetch"]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "NDX", "rolling_pe", "2026-04-01", 31.9623, "worldperatio"),
+        ("index", "NDX", "rolling_pe", "2026-05-01", 32.7202, "worldperatio"),
+    ]
+
+
+def test_fetch_index_pe_rows_supports_vn30_from_worldperatio_source():
+    calls = []
+
+    def fetcher():
+        calls.append("fetch")
+        return "detailPE_data = [[Date.UTC(2026, 3, 1),15.5773],[Date.UTC(2026, 4, 1),16.1419],];"
+
+    rows = fetch_index_pe_rows("VN30", fetcher=fetcher)
+
+    assert calls == ["fetch"]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "VN30", "rolling_pe", "2026-04-01", 15.5773, "worldperatio"),
+        ("index", "VN30", "rolling_pe", "2026-05-01", 16.1419, "worldperatio"),
+    ]
+
+
+def test_normalize_worldperatio_pe_rows_rejects_missing_series():
+    with pytest.raises(DataSourceError, match="No WorldPEratio PE data found for VN30"):
+        normalize_worldperatio_pe_rows("VN30", "<html></html>")
+
+
+def test_normalize_ndx_pe_rows_rejects_missing_worldperatio_series():
+    with pytest.raises(DataSourceError, match="No NDX PE data found"):
+        normalize_ndx_pe_rows("<html></html>")
+
+
+def test_normalize_index_pe_code_accepts_ndx_case_insensitively():
+    assert normalize_index_pe_code("ndx") == "NDX"
+
+
+def test_normalize_index_pe_code_accepts_vn30_case_insensitively():
+    assert normalize_index_pe_code("vn30") == "VN30"
+
+
+def test_normalize_csindex_code_accepts_h_prefixed_indicator_code():
+    assert normalize_csindex_code("h30269") == "H30269"
 
 
 def test_normalize_csindex_code_rejects_invalid_code():
@@ -157,6 +291,50 @@ def test_normalize_index_dividend_yield_rows_prefers_documented_calculation_shar
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "000300", "dividend_yield", "2026-04-17", 3.1, "akshare"),
     ]
+
+
+def test_normalize_index_dividend_yield_rows_accepts_csindex_indicator_columns():
+    frame = pd.DataFrame(
+        {
+            "日期Date": [20260522],
+            "股息率1（总股本）D/P1": [4.30],
+            "股息率2（计算用股本）D/P2": [4.82],
+        }
+    )
+
+    rows = normalize_index_dividend_yield_rows("H30269", frame)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "H30269", "dividend_yield", "2026-05-22", 4.82, "akshare"),
+    ]
+
+
+def test_normalize_index_pb_rows_from_etf_run_reads_latest_pb():
+    html = """
+    # 中证畜牧
+    <span>更新至 <!-- -->2026/05/22</span>
+    ## 市净率
+    <span>最新市净率</span><span>2.23</span>
+    """
+
+    rows = normalize_index_pb_rows_from_etf_run("930707", html)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "930707", "pb", "2026-05-22", 2.23, "etf.run"),
+    ]
+
+
+def test_fetch_index_pb_rows_uses_etf_run_csi_page():
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        return "更新至 2026/05/22\n## 市净率\n最新市净率 2.23"
+
+    rows = fetch_index_pb_rows("930707", fetcher=fetcher)
+
+    assert calls == ["https://www.etf.run/index/CSI/930707"]
+    assert [(row.code, row.date, row.value) for row in rows] == [("930707", "2026-05-22", 2.23)]
 
 
 def test_fetch_index_dividend_yield_rows_filters_to_latest_date_on_or_before_query_date():

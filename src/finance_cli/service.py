@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date
 
 from finance_cli.analytics import (
     calculate_percentile,
@@ -8,6 +9,10 @@ from finance_cli.analytics import (
     validate_years,
 )
 from finance_cli.db import DailyMetric, MetricsRepository
+
+
+LOOKBACK_COVERAGE_GRACE_DAYS = 7
+DAYS_PER_YEAR = 365.2425
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,8 @@ class MetricQueryResult:
     sample_count: int | None
     source: str
     lookback_years: int | None
+    coverage_status: str | None = None
+    effective_years: float | None = None
 
 
 class MetricsService:
@@ -43,6 +50,7 @@ class MetricsService:
         years: int,
         fetch_missing: Callable[[], Iterable[DailyMetric]],
         ensure_lookback_coverage: bool = False,
+        minimum_lookback_years: int | None = None,
     ) -> MetricQueryResult:
         parsed_requested_date = parse_query_date(requested_date)
         validated_years = validate_years(years)
@@ -83,7 +91,7 @@ class MetricsService:
             start_date,
             actual_date,
         )
-        if ensure_lookback_coverage and rows and rows[0].date > start_date:
+        if ensure_lookback_coverage and rows and _has_incomplete_lookback(rows[0].date, start_date):
             self.repository.upsert_metrics(list(fetch_missing()))
             actual_date = self.repository.latest_date_on_or_before(
                 asset_type,
@@ -108,14 +116,21 @@ class MetricsService:
             raise ValueError(
                 f"No data available for {asset_type} {code} {metric} between {start_date} and {actual_date}"
             )
-        has_incomplete_lookback = rows[0].date > start_date
+        has_incomplete_lookback = _has_incomplete_lookback(rows[0].date, start_date)
+        coverage_status = None
+        effective_years = None
         if ensure_lookback_coverage and has_incomplete_lookback:
-            raise ValueError(
-                "Sample coverage is incomplete: "
-                f"asset_type={asset_type}, code={code}, metric={metric}, "
-                f"lookback_years={validated_years}, expected_start_date={start_date}, "
-                f"sample_start_date={rows[0].date}, sample_count={len(rows)}"
-            )
+            minimum_start_date = _minimum_start_date(parsed_actual_date, minimum_lookback_years)
+            if minimum_start_date is None or _has_incomplete_lookback(rows[0].date, minimum_start_date):
+                minimum_text = "" if minimum_start_date is None else f"minimum_start_date={minimum_start_date}, "
+                raise ValueError(
+                    "Sample coverage is incomplete: "
+                    f"asset_type={asset_type}, code={code}, metric={metric}, "
+                    f"lookback_years={validated_years}, expected_start_date={start_date}, "
+                    f"{minimum_text}sample_start_date={rows[0].date}, sample_count={len(rows)}"
+                )
+            coverage_status = "partial"
+            effective_years = _effective_years(rows[0].date, actual_date)
 
         current_row = rows[-1]
         return MetricQueryResult(
@@ -130,6 +145,8 @@ class MetricsService:
             sample_count=len(rows),
             source=current_row.source,
             lookback_years=validated_years,
+            coverage_status=coverage_status,
+            effective_years=effective_years,
         )
 
     def query_value(
@@ -212,3 +229,21 @@ class MetricsService:
                 "9999-12-31",
             )
         )
+
+
+def _has_incomplete_lookback(sample_start_date: str, expected_start_date: str) -> bool:
+    sample_start = parse_query_date(sample_start_date)
+    expected_start = parse_query_date(expected_start_date)
+    return (sample_start - expected_start).days > LOOKBACK_COVERAGE_GRACE_DAYS
+
+
+def _minimum_start_date(actual_date: date, minimum_lookback_years: int | None) -> str | None:
+    if minimum_lookback_years is None:
+        return None
+    return start_date_for_years(actual_date, minimum_lookback_years).isoformat()
+
+
+def _effective_years(sample_start_date: str, actual_date: str) -> float:
+    sample_start = parse_query_date(sample_start_date)
+    actual = parse_query_date(actual_date)
+    return round((actual - sample_start).days / DAYS_PER_YEAR, 1)

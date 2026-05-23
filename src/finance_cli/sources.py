@@ -1,16 +1,27 @@
 from datetime import date, datetime, timedelta
+from html import unescape
+from numbers import Integral, Real
 import re
 from typing import Callable
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from finance_cli.analytics import parse_query_date, start_date_for_years
+from finance_cli.analytics import parse_query_date
 from finance_cli.db import DailyMetric
 
 
-INDEX_PE_DATE_COLUMNS = ("日期", "date", "trade_date")
-INDEX_PE_VALUE_COLUMNS = ("滚动市盈率", "市盈率TTM")
-INDEX_DIVIDEND_YIELD_VALUE_COLUMNS = ("股息率2", "股息率1", "股息率", "dividend_yield")
+INDEX_PE_DATE_COLUMNS = ("日期", "日期Date", "date", "trade_date")
+INDEX_PE_VALUE_COLUMNS = ("滚动市盈率", "市盈率2（计算用股本）P/E2", "市盈率2", "市盈率TTM")
+INDEX_DIVIDEND_YIELD_VALUE_COLUMNS = (
+    "股息率2",
+    "股息率2（计算用股本）D/P2",
+    "股息率1",
+    "股息率1（总股本）D/P1",
+    "股息率",
+    "dividend_yield",
+)
 SW_INDEX_DATE_COLUMNS = ("发布日期", "日期", "date", "trade_date")
 SW_INDEX_CODE_COLUMNS = ("指数代码", "code", "index_code")
 SW_INDEX_PB_VALUE_COLUMNS = ("市净率", "pb", "PB")
@@ -18,6 +29,20 @@ GOLD_DATE_COLUMNS = ("日期", "date", "trade_date")
 GOLD_CLOSE_COLUMNS = ("收盘价", "close", "收盘")
 CN10Y_YIELD_DATE_COLUMNS = ("日期", "date", "trade_date")
 CN10Y_YIELD_VALUE_COLUMNS = ("中国国债收益率10年", "中国10年期国债收益率", "cn10y", "yield")
+CSINDEX_HISTORY_START_DATE = "19900101"
+NDX_PE_URL = "https://worldperatio.com/index/nasdaq-100/"
+VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
+WORLDPERATIO_PE_BLOCK_PATTERN = re.compile(r"detailPE_data\s*=\s*(\[.*?\]);", re.DOTALL)
+WORLDPERATIO_PE_DATA_PATTERN = re.compile(
+    r"\[Date\.UTC\((\d{4}),\s*(\d{1,2}),\s*(\d{1,2})\),\s*([0-9.]+)\]"
+)
+WORLDPERATIO_PE_URLS = {
+    "NDX": NDX_PE_URL,
+    "VN30": VN30_PE_URL,
+}
+ETF_RUN_CSI_INDEX_URL = "https://www.etf.run/index/CSI/{code}"
+ETF_RUN_DATE_PATTERN = re.compile(r"更新至\s*(\d{4})/(\d{1,2})/(\d{1,2})")
+ETF_RUN_PB_PATTERN = re.compile(r"最新市净率\s*([0-9.]+)")
 
 
 class DataSourceError(RuntimeError):
@@ -25,7 +50,14 @@ class DataSourceError(RuntimeError):
 
 
 def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
-    normalized_code = normalize_csindex_code(code)
+    normalized_code = normalize_index_pe_code(code)
+    if normalized_code in WORLDPERATIO_PE_URLS:
+        try:
+            html = fetcher() if fetcher is not None else _fetch_text(WORLDPERATIO_PE_URLS[normalized_code])
+        except Exception as exc:
+            raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
+        return normalize_worldperatio_pe_rows(normalized_code, html)
+
     if fetcher is None:
         try:
             import akshare as ak
@@ -35,11 +67,10 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
         fetcher = ak.stock_zh_index_hist_csindex
 
     try:
-        today = date.today()
         frame = fetcher(
             symbol=normalized_code,
-            start_date=start_date_for_years(today, 10).strftime("%Y%m%d"),
-            end_date=today.strftime("%Y%m%d"),
+            start_date=CSINDEX_HISTORY_START_DATE,
+            end_date=date.today().strftime("%Y%m%d"),
         )
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
@@ -79,13 +110,42 @@ def fetch_index_dividend_yield_rows(
     return [max(eligible_rows, key=lambda row: row.date)]
 
 
+def fetch_index_pb_rows(
+    code: str,
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    normalized_code = normalize_csi_index_pb_code(code)
+    url = ETF_RUN_CSI_INDEX_URL.format(code=normalized_code)
+    try:
+        html = fetcher(url) if fetcher is not None else _fetch_text(url)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch index PB rows for {code}: {exc}") from exc
+    return normalize_index_pb_rows_from_etf_run(normalized_code, html)
+
+
 def normalize_csindex_code(code: str) -> str:
     normalized = code.strip().upper()
     if normalized.startswith(("SH", "SZ")):
         normalized = normalized[2:]
-    if not re.fullmatch(r"\d{6}", normalized):
+    if not re.fullmatch(r"(?:\d{6}|H\d{5})", normalized):
         raise DataSourceError(f"Invalid index code: {code}")
     return normalized
+
+
+def normalize_csi_index_pb_code(code: str) -> str:
+    normalized = code.strip().upper()
+    if not re.fullmatch(r"9\d{5}", normalized):
+        raise DataSourceError(
+            f"PB without --category currently supports CSI 9xxxxx index codes only: {code}"
+        )
+    return normalized
+
+
+def normalize_index_pe_code(code: str) -> str:
+    normalized = code.strip().upper()
+    if normalized in WORLDPERATIO_PE_URLS:
+        return normalized
+    return normalize_csindex_code(code)
 
 
 def fetch_sw_index_pb_rows(
@@ -172,7 +232,36 @@ def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]
             "akshare",
         )
         for _, row in frame.iterrows()
+        if not _is_missing(row[value_column])
     ]
+
+
+def normalize_ndx_pe_rows(html: str) -> list[DailyMetric]:
+    try:
+        return normalize_worldperatio_pe_rows("NDX", html)
+    except DataSourceError as exc:
+        raise DataSourceError("No NDX PE data found") from exc
+
+
+def normalize_worldperatio_pe_rows(code: str, html: str) -> list[DailyMetric]:
+    block_match = WORLDPERATIO_PE_BLOCK_PATTERN.search(html)
+    if block_match is None:
+        raise DataSourceError(f"No WorldPEratio PE data found for {code}")
+
+    rows = [
+        DailyMetric(
+            "index",
+            code,
+            "rolling_pe",
+            date(int(year), int(month_index) + 1, int(day)).isoformat(),
+            _to_float(value),
+            "worldperatio",
+        )
+        for year, month_index, day, value in WORLDPERATIO_PE_DATA_PATTERN.findall(block_match.group(1))
+    ]
+    if not rows:
+        raise DataSourceError(f"No WorldPEratio PE data found for {code}")
+    return rows
 
 
 def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
@@ -189,6 +278,26 @@ def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[
             "akshare",
         )
         for _, row in frame.iterrows()
+    ]
+
+
+def normalize_index_pb_rows_from_etf_run(code: str, html: str) -> list[DailyMetric]:
+    text = _html_to_text(html)
+    date_match = ETF_RUN_DATE_PATTERN.search(text)
+    value_match = ETF_RUN_PB_PATTERN.search(text)
+    if date_match is None or value_match is None:
+        raise DataSourceError(f"No index PB data found for {code}")
+
+    year, month, day = date_match.groups()
+    return [
+        DailyMetric(
+            "index",
+            code,
+            "pb",
+            date(int(year), int(month), int(day)).isoformat(),
+            _to_float(value_match.group(1)),
+            "etf.run",
+        )
     ]
 
 
@@ -270,6 +379,14 @@ def _to_iso_date(value: object) -> str:
         return value.date().isoformat()
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, Integral) and re.fullmatch(r"\d{8}", str(value)):
+        return datetime.strptime(str(value), "%Y%m%d").date().isoformat()
+    if isinstance(value, Real) and float(value).is_integer():
+        date_text = str(int(value))
+        if re.fullmatch(r"\d{8}", date_text):
+            return datetime.strptime(date_text, "%Y%m%d").date().isoformat()
+    if isinstance(value, str) and re.fullmatch(r"\d{8}", value.strip()):
+        return datetime.strptime(value.strip(), "%Y%m%d").date().isoformat()
 
     try:
         parsed = pd.to_datetime(value)
@@ -305,3 +422,21 @@ def _is_missing(value: object) -> bool:
         return bool(pd.isna(value))
     except TypeError:
         return False
+
+
+def _fetch_text(url: str) -> str:
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 500 and body:
+            return body
+        raise
+
+
+def _html_to_text(html: str) -> str:
+    text = re.sub(r"<!--.*?-->", " ", html, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", unescape(text))

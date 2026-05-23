@@ -14,7 +14,9 @@ from finance_cli.sources import (
     fetch_cn10y_yield_rows,
     fetch_gold_rows,
     fetch_index_dividend_yield_rows,
+    fetch_index_pb_rows,
     fetch_index_pe_rows,
+    normalize_index_pe_code,
     normalize_csindex_code,
     fetch_sw_index_pb_rows,
 )
@@ -43,7 +45,7 @@ def pe(
     """Query index rolling PE percentile."""
     try:
         validate_years(years)
-        normalized_code = normalize_csindex_code(code)
+        normalized_code = normalize_index_pe_code(code)
         result = _service().query(
             "index",
             normalized_code,
@@ -52,6 +54,7 @@ def pe(
             years,
             lambda: fetch_index_pe_rows(normalized_code),
             ensure_lookback_coverage=True,
+            minimum_lookback_years=3,
         )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -95,19 +98,28 @@ def pb(
         typer.Option("--date", default_factory=lambda: date.today().isoformat()),
     ],
     code: str = typer.Option(..., "--code"),
-    category: str = typer.Option(..., "--category"),
+    category: str | None = typer.Option(None, "--category"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Query SW index PB value."""
+    """Query index PB value."""
     try:
-        _validate_sw_category(category)
-        result = _service().query_value(
-            f"sw_index:{category}",
-            code,
-            "pb",
-            query_date,
-            lambda: fetch_sw_index_pb_rows(code, category, query_date=query_date),
-        )
+        if category is None:
+            result = _service().query_value(
+                "index",
+                code,
+                "pb",
+                query_date,
+                lambda: fetch_index_pb_rows(code),
+            )
+        else:
+            _validate_sw_category(category)
+            result = _service().query_value(
+                f"sw_index:{category}",
+                code,
+                "pb",
+                query_date,
+                lambda: fetch_sw_index_pb_rows(code, category, query_date=query_date),
+            )
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
@@ -176,7 +188,7 @@ def cn10y_yield(
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index rolling PE history."""
     try:
-        normalized_code = normalize_csindex_code(code)
+        normalized_code = normalize_index_pe_code(code)
         inserted = _service().sync(lambda: fetch_index_pe_rows(normalized_code))
     except DataSourceError as exc:
         raise click.ClickException(str(exc)) from exc

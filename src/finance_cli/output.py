@@ -16,6 +16,8 @@ def format_json(result: MetricQueryResult) -> str:
         "sample_count": result.sample_count,
         "source": result.source,
         "lookback_years": result.lookback_years,
+        "coverage_status": result.coverage_status,
+        "effective_years": result.effective_years,
     }
     return json.dumps(
         {key: value for key, value in payload.items() if value is not None},
@@ -38,6 +40,8 @@ def format_text(result: MetricQueryResult) -> str:
     lines.append(f"{value_label}: {result.value}")
     if result.percentile is not None:
         lines.append(f"历史百分位: {round(result.percentile, 1)}%")
+    if result.coverage_status == "partial" and result.effective_years is not None:
+        lines.append(f"样本覆盖: 不足{result.lookback_years}年，使用全部可用数据，约{result.effective_years}年")
     if result.sample_count is not None:
         lines.append(f"样本数: {result.sample_count}")
     if result.sample_start_date is not None:

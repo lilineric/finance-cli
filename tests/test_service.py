@@ -130,6 +130,71 @@ def test_query_can_refresh_when_local_lookback_coverage_is_incomplete(tmp_path):
     assert result.source == "akshare"
 
 
+def test_query_accepts_lookback_start_on_next_trading_day(tmp_path):
+    repo = MetricsRepository(tmp_path / "finance.db")
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "H30269", "rolling_pe", "2016-05-23", 8.0, "akshare"),
+            DailyMetric("index", "H30269", "rolling_pe", "2026-05-22", 7.6, "akshare"),
+        ]
+    )
+
+    result = service.query(
+        asset_type="index",
+        code="H30269",
+        metric="rolling_pe",
+        requested_date="2026-05-22",
+        years=10,
+        fetch_missing=fail_fetch,
+        ensure_lookback_coverage=True,
+    )
+
+    assert result.sample_start_date == "2016-05-23"
+    assert result.actual_date == "2026-05-22"
+
+
+def test_query_uses_partial_coverage_when_minimum_lookback_is_available(tmp_path):
+    repo = MetricsRepository(tmp_path / "finance.db")
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "990001", "rolling_pe", "2026-05-22", 120.0, "old"),
+        ]
+    )
+    calls = []
+
+    def fetch_missing():
+        calls.append("called")
+        return [
+            DailyMetric("index", "990001", "rolling_pe", "2020-02-27", 80.0, "akshare"),
+            DailyMetric("index", "990001", "rolling_pe", "2026-05-22", 120.0, "akshare"),
+        ]
+
+    result = service.query(
+        asset_type="index",
+        code="990001",
+        metric="rolling_pe",
+        requested_date="2026-05-22",
+        years=10,
+        fetch_missing=fetch_missing,
+        ensure_lookback_coverage=True,
+        minimum_lookback_years=3,
+    )
+
+    assert calls == ["called"]
+    assert result.actual_date == "2026-05-22"
+    assert result.sample_start_date == "2020-02-27"
+    assert result.value == 120.0
+    assert result.percentile == 100.0
+    assert result.sample_count == 2
+    assert result.lookback_years == 10
+    assert result.coverage_status == "partial"
+    assert result.effective_years == 6.2
+
+
 def test_query_raises_when_refreshed_lookback_coverage_is_still_incomplete(tmp_path):
     repo = MetricsRepository(tmp_path / "finance.db")
     service = MetricsService(repo)
@@ -153,11 +218,13 @@ def test_query_raises_when_refreshed_lookback_coverage_is_still_incomplete(tmp_p
                 DailyMetric("index", "000300", "dividend_yield", "2026-05-21", 2.32, "akshare"),
             ],
             ensure_lookback_coverage=True,
+            minimum_lookback_years=3,
         )
     except ValueError as exc:
         message = str(exc)
         assert "Sample coverage is incomplete" in message
         assert "expected_start_date=2016-05-21" in message
+        assert "minimum_start_date=2023-05-21" in message
         assert "sample_start_date=2026-04-23" in message
         assert "sample_count=2" in message
     else:
