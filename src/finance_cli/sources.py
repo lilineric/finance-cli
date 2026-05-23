@@ -29,6 +29,9 @@ GOLD_DATE_COLUMNS = ("日期", "date", "trade_date")
 GOLD_CLOSE_COLUMNS = ("收盘价", "close", "收盘")
 CN10Y_YIELD_DATE_COLUMNS = ("日期", "date", "trade_date")
 CN10Y_YIELD_VALUE_COLUMNS = ("中国国债收益率10年", "中国10年期国债收益率", "cn10y", "yield")
+FUND_NAV_DATE_COLUMNS = ("净值日期", "日期", "date", "trade_date")
+FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
+FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
 NDX_PE_URL = "https://worldperatio.com/index/nasdaq-100/"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
@@ -43,6 +46,10 @@ WORLDPERATIO_PE_URLS = {
 ETF_RUN_CSI_INDEX_URL = "https://www.etf.run/index/CSI/{code}"
 ETF_RUN_DATE_PATTERN = re.compile(r"更新至\s*(\d{4})/(\d{1,2})/(\d{1,2})")
 ETF_RUN_PB_PATTERN = re.compile(r"最新市净率\s*([0-9.]+)")
+FUND_NAV_TYPES = {
+    "unit": ("unit_nav", "单位净值走势"),
+    "accumulated": ("accumulated_nav", "累计净值走势"),
+}
 
 
 class DataSourceError(RuntimeError):
@@ -218,6 +225,36 @@ def fetch_cn10y_yield_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -
     return normalize_cn10y_yield_rows(frame)
 
 
+def fetch_fund_nav_rows(
+    code: str,
+    nav_type: str = "unit",
+    fetcher: Callable[..., pd.DataFrame] | None = None,
+) -> list[DailyMetric]:
+    normalized_code = normalize_fund_code(code)
+    metric, indicator = _fund_nav_type_settings(nav_type)
+    if fetcher is None:
+        try:
+            import akshare as ak
+        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
+            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+
+        fetcher = ak.fund_open_fund_info_em
+
+    try:
+        frame = fetcher(symbol=normalized_code, indicator=indicator, period="成立来")
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch fund NAV rows for {code}: {exc}") from exc
+
+    return normalize_fund_nav_rows(normalized_code, metric, frame)
+
+
+def normalize_fund_code(code: str) -> str:
+    normalized = code.strip()
+    if not re.fullmatch(r"\d{6}", normalized):
+        raise DataSourceError(f"Invalid fund code: {code}")
+    return normalized
+
+
 def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
     date_column = _first_existing_column(frame, INDEX_PE_DATE_COLUMNS)
     value_column = _first_existing_column(frame, INDEX_PE_VALUE_COLUMNS)
@@ -362,6 +399,42 @@ def normalize_cn10y_yield_rows(frame: pd.DataFrame) -> list[DailyMetric]:
         )
         for row in rows
     ]
+
+
+def normalize_fund_nav_rows(code: str, metric: str, frame: pd.DataFrame) -> list[DailyMetric]:
+    date_column = _first_existing_column(frame, FUND_NAV_DATE_COLUMNS)
+    value_column = _first_existing_column(frame, _fund_nav_value_columns(metric))
+
+    rows = [
+        DailyMetric(
+            "fund",
+            code,
+            metric,
+            _to_iso_date(row[date_column]),
+            _to_float(row[value_column]),
+            "akshare",
+        )
+        for _, row in frame.iterrows()
+        if not _is_missing(row[value_column])
+    ]
+    if not rows:
+        raise DataSourceError(f"No fund NAV data found for {code}")
+    return rows
+
+
+def _fund_nav_type_settings(nav_type: str) -> tuple[str, str]:
+    try:
+        return FUND_NAV_TYPES[nav_type]
+    except KeyError as exc:
+        raise DataSourceError(f"Invalid fund NAV type: {nav_type}") from exc
+
+
+def _fund_nav_value_columns(metric: str) -> tuple[str, ...]:
+    if metric == "unit_nav":
+        return FUND_UNIT_NAV_VALUE_COLUMNS
+    if metric == "accumulated_nav":
+        return FUND_ACCUMULATED_NAV_VALUE_COLUMNS
+    raise DataSourceError(f"Invalid fund NAV metric: {metric}")
 
 
 def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str:

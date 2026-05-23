@@ -90,6 +90,27 @@ def test_format_text_includes_gold_close_labels_and_key_fields():
     assert "回看年数: 5" in text
 
 
+def test_format_text_includes_fund_nav_labels():
+    unit = MetricQueryResult("fund", "017763", "unit_nav", "2026-05-23", "2026-05-22", None, 1.2456, None, None, "akshare", None)
+    accumulated = MetricQueryResult(
+        "fund",
+        "017763",
+        "accumulated_nav",
+        "2026-05-23",
+        "2026-05-22",
+        None,
+        1.9876,
+        None,
+        None,
+        "akshare",
+        None,
+    )
+
+    assert "基金: 017763" in format_text(unit)
+    assert "单位净值: 1.2456" in format_text(unit)
+    assert "累计净值: 1.9876" in format_text(accumulated)
+
+
 def test_format_output_omits_percentile_when_unavailable():
     result = MetricQueryResult(
         "index",

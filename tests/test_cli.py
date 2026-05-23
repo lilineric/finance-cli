@@ -18,6 +18,7 @@ def test_cli_help_shows_commands():
     assert "pe" in result.output
     assert "dividend-yield" in result.output
     assert "pb" in result.output
+    assert "fund-nav" in result.output
     assert "cn10y-yield" in result.output
     assert "gold" in result.output
     assert "sync" in result.output
@@ -325,6 +326,115 @@ def test_dividend_yield_command_outputs_json(monkeypatch, tmp_path):
     assert "lookback_years" not in payload
     assert "sample_count" not in payload
     assert "sample_start_date" not in payload
+
+
+def test_fund_nav_command_outputs_unit_nav_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_value(
+        self,
+        asset_type,
+        code,
+        metric,
+        requested_date,
+        fetch_missing,
+    ):
+        seen["asset_type"] = asset_type
+        seen["code"] = code
+        seen["metric"] = metric
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-05-22",
+            None,
+            1.2456,
+            None,
+            None,
+            "akshare",
+            None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(
+        app,
+        ["fund-nav", "--code", "017763", "--date", "2026-05-23", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "fund", "code": "017763", "metric": "unit_nav"}
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "fund"
+    assert payload["code"] == "017763"
+    assert payload["metric"] == "unit_nav"
+    assert payload["requested_date"] == "2026-05-23"
+    assert payload["actual_date"] == "2026-05-22"
+    assert payload["value"] == 1.2456
+    assert "percentile" not in payload
+    assert "lookback_years" not in payload
+
+
+def test_fund_nav_command_supports_accumulated_nav(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_value(
+        self,
+        asset_type,
+        code,
+        metric,
+        requested_date,
+        fetch_missing,
+    ):
+        seen["metric"] = metric
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-05-22",
+            None,
+            1.9876,
+            None,
+            None,
+            "akshare",
+            None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(
+        app,
+        ["fund-nav", "--code", "017763", "--nav-type", "accumulated"],
+    )
+
+    assert result.exit_code == 0
+    assert seen["metric"] == "accumulated_nav"
+    assert "累计净值: 1.9876" in result.output
+
+
+def test_fund_nav_help_describes_nav_type_values():
+    result = runner.invoke(app, ["fund-nav", "--help"])
+
+    assert result.exit_code == 0
+    assert "--nav-type" in result.output
+    assert "unit" in result.output
+    assert "accumulated" in result.output
+
+
+def test_fund_nav_command_rejects_invalid_code(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["fund-nav", "--code", "ABCDEF"])
+
+    assert result.exit_code != 0
+    assert "Invalid fund code" in result.output
+
+
+def test_fund_nav_command_rejects_invalid_nav_type(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["fund-nav", "--code", "017763", "--nav-type", "bad"])
+
+    assert result.exit_code != 0
+    assert "bad" in result.output
 
 
 def test_dividend_yield_command_accepts_h_prefixed_csindex_code(monkeypatch, tmp_path):

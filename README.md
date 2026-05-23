@@ -40,6 +40,18 @@ finance pb --code 930707
 finance pb --code 801010 --category 一级行业 --date 2026-04-20
 ```
 
+Query fund net asset value:
+
+```bash
+finance fund-nav --code 017763
+finance fund-nav --code 017763 --date 2026-05-22
+finance fund-nav --code 017763 --nav-type accumulated
+```
+
+Fund NAV uses Eastmoney/Tiantian Fund historical NAV data via akshare.
+`--nav-type` supports `unit` and `accumulated`; it defaults to `unit`.
+It returns the current value only; it does not calculate a historical percentile.
+
 Query Shanghai Gold Exchange Au9999 close-price percentile:
 
 ```bash
@@ -72,6 +84,7 @@ Query commands auto-refresh local data when needed.
 Percentiles use samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.
 For index PE, if the requested 10-year window is unavailable but at least 3 years of history exists, the percentile uses all available data and the output marks the sample as partial coverage.
 PB and index dividend-yield return single values only; their output omits percentile, lookback years, sample count, and sample start date.
+Fund NAV also returns a single value only and omits percentile, lookback years, sample count, and sample start date.
 PB returns the current value only. Without `--category`, CSI `9xxxxx` index codes such as `930707` use ETF.run's latest PB page. With `--category`, PB uses the SW index analysis source; `--category` must be `市场表征`, `一级行业`, `二级行业`, or `风格指数`, and `--code` must be an SW index code in that category, such as `801010` for `一级行业`.
 
 ## Database

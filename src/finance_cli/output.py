@@ -54,6 +54,8 @@ def _asset_label(asset_type: str) -> str:
         return "黄金"
     if asset_type == "bond":
         return "债券"
+    if asset_type == "fund":
+        return "基金"
     return "指数"
 
 
@@ -64,5 +66,7 @@ def _metric_label(metric: str) -> str:
         "pb": "PB",
         "yield": "收益率",
         "close": "收盘价",
+        "unit_nav": "单位净值",
+        "accumulated_nav": "累计净值",
     }
     return labels.get(metric, metric)

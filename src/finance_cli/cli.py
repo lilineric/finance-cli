@@ -1,4 +1,5 @@
 from datetime import date
+from enum import Enum
 from typing import Annotated
 
 import click
@@ -13,12 +14,14 @@ from finance_cli.sources import (
     DataSourceError,
     fetch_cn10y_yield_rows,
     fetch_gold_rows,
+    fetch_fund_nav_rows,
     fetch_index_dividend_yield_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
     normalize_index_pe_code,
     normalize_csindex_code,
     fetch_sw_index_pb_rows,
+    normalize_fund_code,
 )
 
 
@@ -26,6 +29,11 @@ app = typer.Typer(help="Financial data CLI")
 sync_app = typer.Typer(help="Synchronize local data")
 app.add_typer(sync_app, name="sync")
 SW_INDEX_CATEGORIES = ("市场表征", "一级行业", "二级行业", "风格指数")
+
+
+class FundNavType(str, Enum):
+    unit = "unit"
+    accumulated = "accumulated"
 
 
 def _service() -> MetricsService:
@@ -83,6 +91,39 @@ def dividend_yield(
             "dividend_yield",
             query_date,
             lambda: fetch_index_dividend_yield_rows(normalized_code, query_date=query_date),
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
+@app.command("fund-nav")
+def fund_nav(
+    query_date: Annotated[
+        str,
+        typer.Option("--date", default_factory=lambda: date.today().isoformat()),
+    ],
+    code: str = typer.Option(..., "--code"),
+    nav_type: FundNavType = typer.Option(
+        FundNavType.unit,
+        "--nav-type",
+        help="NAV type to query: unit or accumulated. Defaults to unit.",
+    ),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query fund net asset value."""
+    metric = "unit_nav" if nav_type == FundNavType.unit else "accumulated_nav"
+    try:
+        normalized_code = normalize_fund_code(code)
+        result = _service().query_value(
+            "fund",
+            normalized_code,
+            metric,
+            query_date,
+            lambda: fetch_fund_nav_rows(normalized_code, nav_type=nav_type.value),
         )
     except (DataSourceError, SQLiteApiError) as exc:
         raise click.ClickException(str(exc)) from exc

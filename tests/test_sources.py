@@ -10,10 +10,12 @@ from finance_cli.sources import (
     fetch_index_dividend_yield_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
+    fetch_fund_nav_rows,
     normalize_index_pe_code,
     normalize_ndx_pe_rows,
     fetch_sw_index_pb_rows,
     normalize_csindex_code,
+    normalize_fund_nav_rows,
     normalize_index_pb_rows_from_etf_run,
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
@@ -102,6 +104,37 @@ def test_normalize_gold_rows_accepts_common_akshare_columns():
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("gold", "AU9999", "close", "2026-04-17", 530.5, "akshare"),
         ("gold", "AU9999", "close", "2026-04-20", 535.2, "akshare"),
+    ]
+
+
+def test_normalize_fund_nav_rows_accepts_unit_nav_columns():
+    frame = pd.DataFrame(
+        {
+            "净值日期": ["2026-05-21", "2026-05-22"],
+            "单位净值": [1.2345, 1.2456],
+        }
+    )
+
+    rows = normalize_fund_nav_rows("017763", "unit_nav", frame)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "017763", "unit_nav", "2026-05-21", 1.2345, "akshare"),
+        ("fund", "017763", "unit_nav", "2026-05-22", 1.2456, "akshare"),
+    ]
+
+
+def test_normalize_fund_nav_rows_accepts_accumulated_nav_columns():
+    frame = pd.DataFrame(
+        {
+            "净值日期": ["2026-05-22"],
+            "累计净值": [1.9876],
+        }
+    )
+
+    rows = normalize_fund_nav_rows("017763", "accumulated_nav", frame)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "017763", "accumulated_nav", "2026-05-22", 1.9876, "akshare"),
     ]
 
 
@@ -274,6 +307,36 @@ def test_fetch_gold_rows_uses_injected_fetcher_without_network():
     assert calls == [{"symbol": "Au99.99"}]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("gold", "AU9999", "close", "2026-04-17", 530.5, "akshare"),
+    ]
+
+
+def test_fetch_fund_nav_rows_uses_unit_nav_indicator_by_default():
+    calls = []
+
+    def fetcher(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame({"净值日期": ["2026-05-22"], "单位净值": [1.2456]})
+
+    rows = fetch_fund_nav_rows("017763", fetcher=fetcher)
+
+    assert calls == [{"symbol": "017763", "indicator": "单位净值走势", "period": "成立来"}]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "017763", "unit_nav", "2026-05-22", 1.2456, "akshare"),
+    ]
+
+
+def test_fetch_fund_nav_rows_uses_accumulated_nav_indicator():
+    calls = []
+
+    def fetcher(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame({"净值日期": ["2026-05-22"], "累计净值": [1.9876]})
+
+    rows = fetch_fund_nav_rows("017763", nav_type="accumulated", fetcher=fetcher)
+
+    assert calls == [{"symbol": "017763", "indicator": "累计净值走势", "period": "成立来"}]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "017763", "accumulated_nav", "2026-05-22", 1.9876, "akshare"),
     ]
 
 
