@@ -1,6 +1,6 @@
 import json
 
-from .service import MetricQueryResult
+from .service import MetricQueryResult, MetricRangeQueryResult
 
 
 def format_json(result: MetricQueryResult) -> str:
@@ -23,6 +23,40 @@ def format_json(result: MetricQueryResult) -> str:
         {key: value for key, value in payload.items() if value is not None},
         ensure_ascii=False,
     )
+
+
+def format_range_json(result: MetricRangeQueryResult) -> str:
+    payload = {
+        "asset_type": result.asset_type,
+        "code": result.code,
+        "metric": result.metric,
+        "requested_from": result.requested_from,
+        "requested_to": result.requested_to,
+        "actual_start_date": result.actual_start_date,
+        "actual_end_date": result.actual_end_date,
+        "data": [
+            {"date": row_date, "value": value, "source": source}
+            for row_date, value, source in result.data
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def format_range_text(result: MetricRangeQueryResult) -> str:
+    label = _asset_label(result.asset_type)
+    lines = [
+        f"{label}: {result.code}",
+        f"请求起始日期: {result.requested_from}",
+        f"请求结束日期: {result.requested_to}",
+        f"实际起始日期: {result.actual_start_date}",
+        f"实际结束日期: {result.actual_end_date}",
+        f"指标: {result.metric}",
+    ]
+    lines.extend(
+        f"{row_date} {value} {source}"
+        for row_date, value, source in result.data
+    )
+    return "\n".join(lines)
 
 
 def format_text(result: MetricQueryResult) -> str:

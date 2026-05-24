@@ -1,5 +1,6 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
+import json
 from numbers import Integral, Real
 import re
 from typing import Callable
@@ -33,16 +34,16 @@ FUND_NAV_DATE_COLUMNS = ("净值日期", "日期", "date", "trade_date")
 FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
-NDX_PE_URL = "https://worldperatio.com/index/nasdaq-100/"
+DANJUAN_NDX_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/NDX?day=all"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
 WORLDPERATIO_PE_BLOCK_PATTERN = re.compile(r"detailPE_data\s*=\s*(\[.*?\]);", re.DOTALL)
 WORLDPERATIO_PE_DATA_PATTERN = re.compile(
     r"\[Date\.UTC\((\d{4}),\s*(\d{1,2}),\s*(\d{1,2})\),\s*([0-9.]+)\]"
 )
 WORLDPERATIO_PE_URLS = {
-    "NDX": NDX_PE_URL,
     "VN30": VN30_PE_URL,
 }
+SHANGHAI_TZ = timezone(timedelta(hours=8))
 ETF_RUN_CSI_INDEX_URL = "https://www.etf.run/index/CSI/{code}"
 ETF_RUN_DATE_PATTERN = re.compile(r"更新至\s*(\d{4})/(\d{1,2})/(\d{1,2})")
 ETF_RUN_PB_PATTERN = re.compile(r"最新市净率\s*([0-9.]+)")
@@ -58,6 +59,13 @@ class DataSourceError(RuntimeError):
 
 def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
     normalized_code = normalize_index_pe_code(code)
+    if normalized_code == "NDX":
+        try:
+            text = fetcher() if fetcher is not None else _fetch_text(DANJUAN_NDX_PE_URL)
+        except Exception as exc:
+            raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
+        return normalize_danjuan_index_pe_rows(normalized_code, text)
+
     if normalized_code in WORLDPERATIO_PE_URLS:
         try:
             html = fetcher() if fetcher is not None else _fetch_text(WORLDPERATIO_PE_URLS[normalized_code])
@@ -150,7 +158,7 @@ def normalize_csi_index_pb_code(code: str) -> str:
 
 def normalize_index_pe_code(code: str) -> str:
     normalized = code.strip().upper()
-    if normalized in WORLDPERATIO_PE_URLS:
+    if normalized == "NDX" or normalized in WORLDPERATIO_PE_URLS:
         return normalized
     return normalize_csindex_code(code)
 
@@ -275,9 +283,40 @@ def normalize_index_pe_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]
 
 def normalize_ndx_pe_rows(html: str) -> list[DailyMetric]:
     try:
-        return normalize_worldperatio_pe_rows("NDX", html)
+        return normalize_danjuan_index_pe_rows("NDX", html)
     except DataSourceError as exc:
         raise DataSourceError("No NDX PE data found") from exc
+
+
+def normalize_danjuan_index_pe_rows(code: str, text: str) -> list[DailyMetric]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DataSourceError(f"No Danjuan PE data found for {code}") from exc
+
+    if payload.get("result_code") != 0:
+        message = str(payload.get("message", "unknown error"))
+        raise DataSourceError(f"Danjuan PE data request failed for {code}: {message}")
+
+    series = payload.get("data", {}).get("index_eva_pe_growths")
+    if not isinstance(series, list) or not series:
+        raise DataSourceError(f"No Danjuan PE data found for {code}")
+
+    rows = [
+        DailyMetric(
+            "index",
+            code,
+            "rolling_pe",
+            _timestamp_ms_to_shanghai_date(point["ts"]),
+            _to_float(point["pe"]),
+            "danjuan",
+        )
+        for point in series
+        if isinstance(point, dict) and "ts" in point and "pe" in point and not _is_missing(point["pe"])
+    ]
+    if not rows:
+        raise DataSourceError(f"No Danjuan PE data found for {code}")
+    return rows
 
 
 def normalize_worldperatio_pe_rows(code: str, html: str) -> list[DailyMetric]:
@@ -301,6 +340,10 @@ def normalize_worldperatio_pe_rows(code: str, html: str) -> list[DailyMetric]:
     return rows
 
 
+def _timestamp_ms_to_shanghai_date(value: object) -> str:
+    return datetime.fromtimestamp(_to_float(value) / 1000, tz=SHANGHAI_TZ).date().isoformat()
+
+
 def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
     date_column = _first_existing_column(frame, INDEX_PE_DATE_COLUMNS)
     value_column = _first_existing_column(frame, INDEX_DIVIDEND_YIELD_VALUE_COLUMNS)
@@ -319,6 +362,10 @@ def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[
 
 
 def normalize_index_pb_rows_from_etf_run(code: str, html: str) -> list[DailyMetric]:
+    compressed_rows = _normalize_index_pb_rows_from_etf_run_compressed_daily(code, html)
+    if compressed_rows:
+        return compressed_rows
+
     text = _html_to_text(html)
     date_match = ETF_RUN_DATE_PATTERN.search(text)
     value_match = ETF_RUN_PB_PATTERN.search(text)
@@ -336,6 +383,70 @@ def normalize_index_pb_rows_from_etf_run(code: str, html: str) -> list[DailyMetr
             "etf.run",
         )
     ]
+
+
+def _normalize_index_pb_rows_from_etf_run_compressed_daily(code: str, html: str) -> list[DailyMetric]:
+    text = html.replace(r"\"", '"')
+    marker_index = text.find('"compressedIndexDaily"')
+    if marker_index == -1:
+        return []
+
+    try:
+        field_names = json.loads(_json_array_after(text, '"fieldNames"', marker_index))
+        values = json.loads(_json_array_after(text, '"values"', marker_index))
+        date_index = field_names.index("date")
+        value_index = field_names.index("equalWeightedPbTtm")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise DataSourceError(f"No index PB history data found for {code}") from exc
+
+    rows = [
+        DailyMetric(
+            "index",
+            code,
+            "pb",
+            _to_iso_date(row[date_index]),
+            _to_float(row[value_index]),
+            "etf.run",
+        )
+        for row in values
+        if len(row) > value_index and not _is_missing(row[value_index])
+    ]
+    if not rows:
+        raise DataSourceError(f"No index PB history data found for {code}")
+    return rows
+
+
+def _json_array_after(text: str, marker: str, start: int) -> str:
+    marker_index = text.find(marker, start)
+    if marker_index == -1:
+        raise ValueError(f"Missing marker: {marker}")
+    array_start = text.find("[", marker_index + len(marker))
+    if array_start == -1:
+        raise ValueError(f"Missing array after marker: {marker}")
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(array_start, len(text)):
+        character = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif character == "\\":
+                escape = True
+            elif character == '"':
+                in_string = False
+        else:
+            if character == '"':
+                in_string = True
+            elif character == "[":
+                depth += 1
+            elif character == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[array_start : index + 1]
+
+    raise ValueError(f"Unterminated array after marker: {marker}")
 
 
 def normalize_sw_index_pb_rows(code: str, category: str, frame: pd.DataFrame) -> list[DailyMetric]:

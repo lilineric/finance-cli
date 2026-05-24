@@ -21,7 +21,8 @@ finance pe --code VN30 --years 10
 ```
 
 Rolling PE uses the CSIndex historical `滚动市盈率` field and is stored as `rolling_pe`.
-`NDX` and `VN30` use WorldPEratio monthly historical P/E data and are also stored as `rolling_pe`; `VN30` is based on WorldPEratio's Vietnam market series.
+`NDX` uses Danjuan's historical valuation API and is also stored as `rolling_pe`.
+`VN30` uses WorldPEratio monthly historical P/E data and is also stored as `rolling_pe`; `VN30` is based on WorldPEratio's Vietnam market series.
 
 Query index dividend-yield value:
 
@@ -69,6 +70,23 @@ Output JSON:
 ```bash
 finance pe --code 000300 --date 2026-04-20 --json
 ```
+
+Query date ranges:
+
+```bash
+finance pe --code 000300 --from 2026-01-01 --to 2026-05-01 --json
+finance dividend-yield --code 000300 --from 2026-01-01 --to 2026-05-01 --json
+finance pb --code 930707 --from 2026-01-01 --to 2026-05-01 --json
+finance pb --code 801010 --category 一级行业 --from 2026-01-01 --to 2026-05-01 --json
+finance gold --from 2026-01-01 --to 2026-05-01 --json
+finance cn10y-yield --from 2026-01-01 --to 2026-05-01 --json
+finance fund-nav --code 017763 --from 2026-01-01 --to 2026-05-01 --json
+finance fund-nav --code 017763 --nav-type accumulated --from 2026-01-01 --to 2026-05-01 --json
+```
+
+Range JSON includes `requested_from`, `requested_to`, `actual_start_date`, `actual_end_date`, and `data`.
+Each `data` row contains `date`, `value`, and `source`.
+Range output returns raw values only; it never includes percentile, sample count, sample start date, lookback years, coverage status, or effective years.
 
 Manually synchronize data:
 

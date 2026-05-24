@@ -124,6 +124,22 @@ class MetricsRepository:
 
         return len(metrics)
 
+    def delete_metrics(self, asset_type: str, code: str, metric: str) -> int:
+        response = self.client.post_json(
+            "/v1/sqlite/exec",
+            {
+                "db": self.db_name,
+                "sql": """
+                DELETE FROM daily_metrics
+                WHERE asset_type = ?
+                  AND code = ?
+                  AND metric = ?
+                """,
+                "params": [asset_type, code, metric],
+            },
+        )
+        return int(response.get("rows_affected", 0))
+
     def latest_date_on_or_before(
         self,
         asset_type: str,

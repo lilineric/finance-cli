@@ -4,7 +4,7 @@ from typer.testing import CliRunner
 
 from finance_cli.cli import app
 from finance_cli.db import SQLiteApiError
-from finance_cli.service import MetricQueryResult
+from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 from finance_cli.sources import DataSourceError
 
 
@@ -533,9 +533,11 @@ def test_pb_command_without_category_queries_index_pb(monkeypatch, tmp_path):
         metric,
         requested_date,
         fetch_missing,
+        refresh_stale=True,
     ):
         seen["asset_type"] = asset_type
         seen["code"] = code
+        seen["refresh_stale"] = refresh_stale
         return MetricQueryResult(
             asset_type,
             code,
@@ -555,7 +557,7 @@ def test_pb_command_without_category_queries_index_pb(monkeypatch, tmp_path):
     result = runner.invoke(app, ["pb", "--code", "930707", "--date", "2026-05-23"])
 
     assert result.exit_code == 0
-    assert seen == {"asset_type": "index", "code": "930707"}
+    assert seen == {"asset_type": "index", "code": "930707", "refresh_stale": True}
     assert "PB: 2.23" in result.output
 
 
@@ -619,8 +621,11 @@ def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
 def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
     seen = {}
 
-    def sync(self, fetch_rows):
+    def replace_sync(self, asset_type, code, metric, fetch_rows):
         rows = list(fetch_rows())
+        seen["asset_type"] = asset_type
+        seen["sync_code"] = code
+        seen["metric"] = metric
         seen["rows"] = rows
         return 3
 
@@ -628,15 +633,45 @@ def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
         seen["code"] = code
         return []
 
-    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+    monkeypatch.setattr("finance_cli.service.MetricsService.replace_sync", replace_sync)
     monkeypatch.setattr("finance_cli.cli.fetch_index_pe_rows", fetch_index_pe_rows)
 
     result = runner.invoke(app, ["sync", "pe", "--code", "NDX"])
 
     assert result.exit_code == 0
+    assert seen["asset_type"] == "index"
+    assert seen["sync_code"] == "NDX"
+    assert seen["metric"] == "rolling_pe"
     assert seen["code"] == "NDX"
     assert seen["rows"] == []
     assert "同步 3 条记录" in result.output
+
+
+def test_sync_pe_keeps_upsert_sync_for_non_ndx(monkeypatch, tmp_path):
+    seen = {}
+
+    def sync(self, fetch_rows):
+        rows = list(fetch_rows())
+        seen["rows"] = rows
+        return 2
+
+    def replace_sync(self, asset_type, code, metric, fetch_rows):
+        raise AssertionError("replace_sync should not be called")
+
+    def fetch_index_pe_rows(code):
+        seen["code"] = code
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+    monkeypatch.setattr("finance_cli.service.MetricsService.replace_sync", replace_sync)
+    monkeypatch.setattr("finance_cli.cli.fetch_index_pe_rows", fetch_index_pe_rows)
+
+    result = runner.invoke(app, ["sync", "pe", "--code", "000300"])
+
+    assert result.exit_code == 0
+    assert seen["code"] == "000300"
+    assert seen["rows"] == []
+    assert "同步 2 条记录" in result.output
 
 
 def test_sync_gold_outputs_inserted_count(monkeypatch, tmp_path):
@@ -688,6 +723,20 @@ def test_cli_reports_data_source_errors(monkeypatch, tmp_path):
     assert "source failed" in result.output
 
 
+def test_cli_reports_data_source_errors_as_json_when_requested(monkeypatch, tmp_path):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        raise DataSourceError("source failed")
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {"error": {"code": "runtime_error", "message": "source failed"}}
+    assert "╭─ Error" not in result.output
+
+
 def test_cli_reports_sqlite_api_errors(monkeypatch, tmp_path):
     def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
         raise SQLiteApiError(500, "sqlite_error", "database is locked")
@@ -701,8 +750,376 @@ def test_cli_reports_sqlite_api_errors(monkeypatch, tmp_path):
     assert "database is locked" in result.output
 
 
+def test_cli_reports_sqlite_api_errors_as_json_when_requested(monkeypatch, tmp_path):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        raise SQLiteApiError(500, "sqlite_error", "database is locked")
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "sqlite_api_error"
+    assert "database is locked" in payload["error"]["message"]
+    assert "╭─ Error" not in result.output
+
+
+def test_cli_reports_no_data_errors_as_json_when_requested(monkeypatch, tmp_path):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        raise ValueError("No data available for gold AU9999 close on or before 2026-05-24")
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "runtime_error",
+            "message": "No data available for gold AU9999 close on or before 2026-05-24",
+        }
+    }
+    assert "╭─ Error" not in result.output
+
+
 def test_cli_reports_validation_errors(monkeypatch, tmp_path):
     result = runner.invoke(app, ["gold", "--years", "11"])
 
     assert result.exit_code != 0
     assert "between 1 and 10" in result.output
+
+
+def test_cli_reports_validation_errors_as_json_when_requested(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["gold", "--years", "11", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {"error": {"code": "invalid_parameter", "message": "Years must be between 1 and 10"}}
+    assert "╭─ Error" not in result.output
+
+
+def test_cli_reports_parameter_parse_errors_as_json_when_requested(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["fund-nav", "--code", "017763", "--nav-type", "bad", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "invalid_parameter"
+    assert "bad" in payload["error"]["message"]
+    assert "╭─ Error" not in result.output
+
+
+def test_cli_reports_invalid_code_as_json_when_requested(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["pb", "--code", "bad", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "PB without --category currently supports CSI 9xxxxx index codes only: bad",
+        }
+    }
+    assert "╭─ Error" not in result.output
+
+
+def test_pe_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update(
+            {
+                "asset_type": asset_type,
+                "code": code,
+                "metric": metric,
+                "requested_from": requested_from,
+                "requested_to": requested_to,
+            }
+        )
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-01-02", 12.3, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["pe", "--code", "000300", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {
+        "asset_type": "index",
+        "code": "000300",
+        "metric": "rolling_pe",
+        "requested_from": "2026-01-01",
+        "requested_to": "2026-05-01",
+    }
+    payload = json.loads(result.output)
+    assert payload["actual_start_date"] == "2026-01-02"
+    assert payload["data"] == [{"date": "2026-01-02", "value": 12.3, "source": "akshare"}]
+    assert "percentile" not in payload
+
+
+def test_gold_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 540.0, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["gold", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "gold", "code": "AU9999", "metric": "close"}
+    assert json.loads(result.output)["metric"] == "close"
+
+
+def test_cn10y_yield_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 1.7, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["cn10y-yield", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "bond", "code": "CN10Y", "metric": "yield"}
+    assert json.loads(result.output)["metric"] == "yield"
+
+
+def test_dividend_yield_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 2.3, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["dividend-yield", "--code", "000300", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "index", "code": "000300", "metric": "dividend_yield"}
+    assert json.loads(result.output)["metric"] == "dividend_yield"
+
+
+def test_pb_command_without_category_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 2.23, "etf.run")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["pb", "--code", "930707", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "index", "code": "930707", "metric": "pb"}
+    assert json.loads(result.output)["data"][0]["source"] == "etf.run"
+
+
+def test_pb_command_with_category_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 1.8, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["pb", "--code", "801010", "--category", "一级行业", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "sw_index:一级行业", "code": "801010", "metric": "pb"}
+
+
+def test_fund_nav_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 1.2456, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["fund-nav", "--code", "017763", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "fund", "code": "017763", "metric": "unit_nav"}
+
+
+def test_fund_nav_command_outputs_accumulated_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-04-30",
+            [("2026-04-30", 1.9876, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        [
+            "fund-nav",
+            "--code",
+            "017763",
+            "--nav-type",
+            "accumulated",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-05-01",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "fund", "code": "017763", "metric": "accumulated_nav"}
+
+
+def test_range_mode_requires_from_and_to(monkeypatch, tmp_path):
+    result = runner.invoke(app, ["gold", "--from", "2026-01-01", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "--from and --to must be supplied together",
+        }
+    }
+
+
+def test_range_mode_rejects_explicit_date(monkeypatch, tmp_path):
+    result = runner.invoke(
+        app,
+        ["gold", "--from", "2026-01-01", "--to", "2026-05-01", "--date", "2026-04-20", "--json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "--date cannot be used with --from/--to",
+        }
+    }
+
+
+def test_range_mode_rejects_explicit_years(monkeypatch, tmp_path):
+    result = runner.invoke(
+        app,
+        ["pe", "--code", "000300", "--from", "2026-01-01", "--to", "2026-05-01", "--years", "5", "--json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "--years cannot be used with --from/--to",
+        }
+    }
+
+
+def test_range_mode_rejects_from_after_to(monkeypatch, tmp_path):
+    result = runner.invoke(
+        app,
+        ["gold", "--from", "2026-05-01", "--to", "2026-01-01", "--json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "from date must be on or before to date",
+        }
+    }

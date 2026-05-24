@@ -32,6 +32,18 @@ class MetricQueryResult:
     effective_years: float | None = None
 
 
+@dataclass(frozen=True)
+class MetricRangeQueryResult:
+    asset_type: str
+    code: str
+    metric: str
+    requested_from: str
+    requested_to: str
+    actual_start_date: str
+    actual_end_date: str
+    data: list[tuple[str, float, str]]
+
+
 class MetricsService:
     def __init__(self, repository: MetricsRepository) -> None:
         self.repository = repository
@@ -39,6 +51,18 @@ class MetricsService:
     def sync(self, fetch_rows: Callable[[], Iterable[DailyMetric]]) -> int:
         self.repository.initialize()
         rows = list(fetch_rows())
+        return self.repository.upsert_metrics(rows)
+
+    def replace_sync(
+        self,
+        asset_type: str,
+        code: str,
+        metric: str,
+        fetch_rows: Callable[[], Iterable[DailyMetric]],
+    ) -> int:
+        self.repository.initialize()
+        rows = list(fetch_rows())
+        self.repository.delete_metrics(asset_type, code, metric)
         return self.repository.upsert_metrics(rows)
 
     def query(
@@ -156,6 +180,7 @@ class MetricsService:
         metric: str,
         requested_date: str,
         fetch_missing: Callable[[], Iterable[DailyMetric]],
+        refresh_stale: bool = True,
     ) -> MetricQueryResult:
         parsed_requested_date = parse_query_date(requested_date)
         requested_date_text = parsed_requested_date.isoformat()
@@ -167,11 +192,14 @@ class MetricsService:
             metric,
             requested_date_text,
         )
-        if actual_date is None or not self._has_local_data_on_or_after(
-            asset_type,
-            code,
-            metric,
-            requested_date_text,
+        if actual_date is None or (
+            refresh_stale
+            and not self._has_local_data_on_or_after(
+                asset_type,
+                code,
+                metric,
+                requested_date_text,
+            )
         ):
             self.repository.upsert_metrics(list(fetch_missing()))
             actual_date = self.repository.latest_date_on_or_before(
@@ -211,6 +239,62 @@ class MetricsService:
             sample_count=None,
             source=current_row.source,
             lookback_years=None,
+        )
+
+    def query_range(
+        self,
+        asset_type: str,
+        code: str,
+        metric: str,
+        requested_from: str,
+        requested_to: str,
+        fetch_missing: Callable[[], Iterable[DailyMetric]],
+    ) -> MetricRangeQueryResult:
+        parsed_from = parse_query_date(requested_from)
+        parsed_to = parse_query_date(requested_to)
+        if parsed_from > parsed_to:
+            raise ValueError("from date must be on or before to date")
+
+        from_text = parsed_from.isoformat()
+        to_text = parsed_to.isoformat()
+
+        self.repository.initialize()
+        rows = self.repository.metrics_between(
+            asset_type,
+            code,
+            metric,
+            from_text,
+            to_text,
+        )
+        if not self._has_local_data_on_or_after(
+            asset_type,
+            code,
+            metric,
+            to_text,
+        ):
+            self.repository.upsert_metrics(list(fetch_missing()))
+            rows = self.repository.metrics_between(
+                asset_type,
+                code,
+                metric,
+                from_text,
+                to_text,
+            )
+
+        if not rows:
+            raise ValueError(
+                f"No data available for {asset_type} {code} {metric} between {from_text} and {to_text}"
+            )
+
+        return MetricRangeQueryResult(
+            asset_type=asset_type,
+            code=code,
+            metric=metric,
+            requested_from=from_text,
+            requested_to=to_text,
+            actual_start_date=rows[0].date,
+            actual_end_date=rows[-1].date,
+            data=[(row.date, row.value, row.source) for row in rows],
         )
 
     def _has_local_data_on_or_after(

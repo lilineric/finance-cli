@@ -89,6 +89,20 @@ def test_repository_upserts_metrics_with_single_exec_request():
     assert payload["params"][13] == payload["params"][6]
 
 
+def test_repository_deletes_metrics_for_single_series():
+    client = FakeSQLiteApiClient()
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    deleted = repo.delete_metrics("index", "NDX", "rolling_pe")
+
+    assert deleted == 1
+    path, payload = client.calls[0]
+    assert path == "/v1/sqlite/exec"
+    assert payload["db"] == "finance.db"
+    assert "DELETE FROM daily_metrics" in payload["sql"]
+    assert payload["params"] == ["index", "NDX", "rolling_pe"]
+
+
 def test_repository_queries_latest_date():
     client = FakeSQLiteApiClient(
         {

@@ -14,6 +14,7 @@ from finance_cli.sources import (
     normalize_index_pe_code,
     normalize_ndx_pe_rows,
     fetch_sw_index_pb_rows,
+    normalize_danjuan_index_pe_rows,
     normalize_csindex_code,
     normalize_fund_nav_rows,
     normalize_index_pb_rows_from_etf_run,
@@ -238,18 +239,40 @@ def test_fetch_index_pe_rows_supports_ndx_from_worldperatio_source():
 
     def fetcher():
         calls.append("fetch")
-        return (
-            "detailPE_data = [[Date.UTC(2026, 3, 1),31.9623],[Date.UTC(2026, 4, 1),32.7202]];"
-            "other_data = [[Date.UTC(2026, 4, 1),11.6947]];"
-        )
+        return """
+        {
+            "data": {
+                "index_eva_pe_growths": [
+                    {"pe": 22.9024, "ts": 1463932800000},
+                    {"pe": 35.1883, "ts": 1779379200000}
+                ]
+            },
+            "result_code": 0
+        }
+        """
 
     rows = fetch_index_pe_rows("NDX", fetcher=fetcher)
 
     assert calls == ["fetch"]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
-        ("index", "NDX", "rolling_pe", "2026-04-01", 31.9623, "worldperatio"),
-        ("index", "NDX", "rolling_pe", "2026-05-01", 32.7202, "worldperatio"),
+        ("index", "NDX", "rolling_pe", "2016-05-23", 22.9024, "danjuan"),
+        ("index", "NDX", "rolling_pe", "2026-05-22", 35.1883, "danjuan"),
     ]
+
+
+def test_normalize_danjuan_ndx_pe_rows_rejects_error_response():
+    with pytest.raises(DataSourceError, match="Danjuan PE data request failed"):
+        normalize_danjuan_index_pe_rows("NDX", '{"result_code": 1, "message": "failed"}')
+
+
+def test_normalize_danjuan_ndx_pe_rows_rejects_missing_series():
+    with pytest.raises(DataSourceError, match="No Danjuan PE data found"):
+        normalize_danjuan_index_pe_rows("NDX", '{"data": {}, "result_code": 0}')
+
+
+def test_normalize_danjuan_ndx_pe_rows_rejects_empty_series():
+    with pytest.raises(DataSourceError, match="No Danjuan PE data found"):
+        normalize_danjuan_index_pe_rows("NDX", '{"data": {"index_eva_pe_growths": []}, "result_code": 0}')
 
 
 def test_fetch_index_pe_rows_supports_vn30_from_worldperatio_source():
@@ -387,17 +410,40 @@ def test_normalize_index_pb_rows_from_etf_run_reads_latest_pb():
     ]
 
 
+def test_normalize_index_pb_rows_from_etf_run_reads_compressed_history():
+    html = r'''
+    <script>
+    self.__next_f.push([1,"{\"compressedIndexDaily\":{\"fieldNames\":[\"date\",\"tradeAt\",\"close\",\"equalWeightedPeTtm\",\"historyPePercentile\",\"equalWeightedPbTtm\",\"historyPbPercentile\"],\"values\":[[\"2021-02-22\",1613923200000,4087.0469,22.59,1,3.299,1],[\"2026-05-22\",1747872000000,10975.57,35.8981,0.3,2.2344,0.286164]]}}"])
+    </script>
+    '''
+
+    rows = normalize_index_pb_rows_from_etf_run("930707", html)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "930707", "pb", "2021-02-22", 3.299, "etf.run"),
+        ("index", "930707", "pb", "2026-05-22", 2.2344, "etf.run"),
+    ]
+
+
 def test_fetch_index_pb_rows_uses_etf_run_csi_page():
     calls = []
 
     def fetcher(url):
         calls.append(url)
-        return "更新至 2026/05/22\n## 市净率\n最新市净率 2.23"
+        return r'''
+        <script>
+        self.__next_f.push([1,"{\"compressedIndexDaily\":{\"fieldNames\":[\"date\",\"equalWeightedPbTtm\"],\"values\":[[\"2021-02-22\",3.299],[\"2026-05-22\",2.2344]]}}"])
+        </script>
+        '''
 
     rows = fetch_index_pb_rows("930707", fetcher=fetcher)
 
     assert calls == ["https://www.etf.run/index/CSI/930707"]
-    assert [(row.code, row.date, row.value) for row in rows] == [("930707", "2026-05-22", 2.23)]
+    assert [(row.code, row.date, row.value) for row in rows] == [
+        ("930707", "2021-02-22", 3.299),
+        ("930707", "2026-05-22", 2.2344),
+    ]
+
 
 
 def test_fetch_index_dividend_yield_rows_filters_to_latest_date_on_or_before_query_date():

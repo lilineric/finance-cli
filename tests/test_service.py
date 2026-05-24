@@ -19,6 +19,16 @@ class InMemoryMetricsRepository:
             self.rows[key] = metric
         return len(metrics)
 
+    def delete_metrics(self, asset_type, code, metric):
+        keys = [
+            key
+            for key, row in self.rows.items()
+            if row.asset_type == asset_type and row.code == code and row.metric == metric
+        ]
+        for key in keys:
+            del self.rows[key]
+        return len(keys)
+
     def latest_date_on_or_before(self, asset_type, code, metric, query_date):
         dates = [
             row.date
@@ -78,6 +88,47 @@ def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tm
         source="test",
         lookback_years=1,
     )
+
+
+def test_replace_sync_deletes_existing_series_before_upserting_rows(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "NDX", "rolling_pe", "2026-05-01", 32.859, "worldperatio"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-05-22", 12.0, "akshare"),
+        ]
+    )
+
+    count = service.replace_sync(
+        "index",
+        "NDX",
+        "rolling_pe",
+        lambda: [
+            DailyMetric("index", "NDX", "rolling_pe", "2026-05-22", 35.1883, "danjuan"),
+        ],
+    )
+
+    assert count == 1
+    assert repo.rows == {
+        ("index", "000300", "rolling_pe", "2026-05-22"): DailyMetric(
+            "index",
+            "000300",
+            "rolling_pe",
+            "2026-05-22",
+            12.0,
+            "akshare",
+        ),
+        ("index", "NDX", "rolling_pe", "2026-05-22"): DailyMetric(
+            "index",
+            "NDX",
+            "rolling_pe",
+            "2026-05-22",
+            35.1883,
+            "danjuan",
+        ),
+    }
 
 
 def test_query_fetches_missing_data_before_calculating(tmp_path):
@@ -296,6 +347,115 @@ def test_query_value_uses_exact_local_date_without_percentile_fields(tmp_path):
     assert result.lookback_years is None
 
 
+def test_query_value_uses_previous_fund_nav_when_local_history_covers_requested_date(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("fund", "017763", "unit_nav", "2026-05-22", 1.2456, "akshare"),
+            DailyMetric("fund", "017763", "unit_nav", "2026-05-25", 1.2468, "akshare"),
+        ]
+    )
+
+    result = service.query_value(
+        asset_type="fund",
+        code="017763",
+        metric="unit_nav",
+        requested_date="2026-05-23",
+        fetch_missing=fail_fetch,
+    )
+
+    assert result.actual_date == "2026-05-22"
+    assert result.value == 1.2456
+    assert result.source == "akshare"
+
+
+def test_query_value_backfills_fund_nav_history_before_returning_requested_date(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    calls = []
+
+    def fetch_missing():
+        calls.append("called")
+        return [
+            DailyMetric("fund", "017763", "unit_nav", "2026-05-21", 1.2345, "akshare"),
+            DailyMetric("fund", "017763", "unit_nav", "2026-05-22", 1.2456, "akshare"),
+            DailyMetric("fund", "017763", "unit_nav", "2026-05-26", 1.2512, "akshare"),
+        ]
+
+    result = service.query_value(
+        asset_type="fund",
+        code="017763",
+        metric="unit_nav",
+        requested_date="2026-05-23",
+        fetch_missing=fetch_missing,
+    )
+
+    assert calls == ["called"]
+    assert result.actual_date == "2026-05-22"
+    assert result.value == 1.2456
+    assert repo.metrics_between("fund", "017763", "unit_nav", "2026-05-01", "2026-05-31") == [
+        DailyMetric("fund", "017763", "unit_nav", "2026-05-21", 1.2345, "akshare"),
+        DailyMetric("fund", "017763", "unit_nav", "2026-05-22", 1.2456, "akshare"),
+        DailyMetric("fund", "017763", "unit_nav", "2026-05-26", 1.2512, "akshare"),
+    ]
+
+
+def test_query_value_can_use_previous_local_date_without_fetching(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "930707", "pb", "2026-05-22", 2.2344, "etf.run"),
+        ]
+    )
+
+    result = service.query_value(
+        asset_type="index",
+        code="930707",
+        metric="pb",
+        requested_date="2026-05-23",
+        fetch_missing=fail_fetch,
+        refresh_stale=False,
+    )
+
+    assert result.actual_date == "2026-05-22"
+    assert result.value == 2.2344
+    assert result.source == "etf.run"
+
+
+def test_query_value_backfills_history_before_returning_previous_date(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    calls = []
+
+    def fetch_missing():
+        calls.append("called")
+        return [
+            DailyMetric("index", "930707", "pb", "2021-02-22", 3.299, "etf.run"),
+            DailyMetric("index", "930707", "pb", "2026-05-22", 2.2344, "etf.run"),
+        ]
+
+    result = service.query_value(
+        asset_type="index",
+        code="930707",
+        metric="pb",
+        requested_date="2026-05-23",
+        fetch_missing=fetch_missing,
+        refresh_stale=False,
+    )
+
+    assert calls == ["called"]
+    assert result.actual_date == "2026-05-22"
+    assert result.value == 2.2344
+    assert repo.metrics_between("index", "930707", "pb", "2021-01-01", "2026-12-31") == [
+        DailyMetric("index", "930707", "pb", "2021-02-22", 3.299, "etf.run"),
+        DailyMetric("index", "930707", "pb", "2026-05-22", 2.2344, "etf.run"),
+    ]
+
+
 def test_query_value_refreshes_stale_local_data(tmp_path):
     repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
@@ -392,5 +552,117 @@ def test_query_raises_when_no_data_exists_after_fetch(tmp_path):
         )
     except ValueError as exc:
         assert "No data available" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_query_range_returns_rows_inside_requested_dates(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "000300", "rolling_pe", "2025-12-31", 9.0, "test"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-01-02", 10.0, "test"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-01-05", 11.0, "test"),
+            DailyMetric("index", "000300", "rolling_pe", "2026-05-02", 12.0, "test"),
+        ]
+    )
+
+    result = service.query_range(
+        asset_type="index",
+        code="000300",
+        metric="rolling_pe",
+        requested_from="2026-01-01",
+        requested_to="2026-05-01",
+        fetch_missing=fail_fetch,
+    )
+
+    assert result.asset_type == "index"
+    assert result.code == "000300"
+    assert result.metric == "rolling_pe"
+    assert result.requested_from == "2026-01-01"
+    assert result.requested_to == "2026-05-01"
+    assert result.actual_start_date == "2026-01-02"
+    assert result.actual_end_date == "2026-01-05"
+    assert result.data == [
+        ("2026-01-02", 10.0, "test"),
+        ("2026-01-05", 11.0, "test"),
+    ]
+
+
+def test_query_range_fetches_when_local_data_is_stale_for_end_date(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("gold", "AU9999", "close", "2026-01-02", 530.0, "old"),
+        ]
+    )
+    calls = []
+
+    def fetch_missing():
+        calls.append("called")
+        return [
+            DailyMetric("gold", "AU9999", "close", "2026-01-02", 531.0, "akshare"),
+            DailyMetric("gold", "AU9999", "close", "2026-04-30", 540.0, "akshare"),
+            DailyMetric("gold", "AU9999", "close", "2026-05-04", 545.0, "akshare"),
+        ]
+
+    result = service.query_range(
+        asset_type="gold",
+        code="AU9999",
+        metric="close",
+        requested_from="2026-01-01",
+        requested_to="2026-05-01",
+        fetch_missing=fetch_missing,
+    )
+
+    assert calls == ["called"]
+    assert result.actual_start_date == "2026-01-02"
+    assert result.actual_end_date == "2026-04-30"
+    assert result.data == [
+        ("2026-01-02", 531.0, "akshare"),
+        ("2026-04-30", 540.0, "akshare"),
+    ]
+
+
+def test_query_range_raises_when_no_data_exists_after_fetch(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+
+    try:
+        service.query_range(
+            asset_type="bond",
+            code="CN10Y",
+            metric="yield",
+            requested_from="2026-01-01",
+            requested_to="2026-05-01",
+            fetch_missing=lambda: [
+                DailyMetric("bond", "CN10Y", "yield", "2025-12-31", 1.8, "akshare"),
+            ],
+        )
+    except ValueError as exc:
+        assert "No data available for bond CN10Y yield between 2026-01-01 and 2026-05-01" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_query_range_rejects_from_after_to(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+
+    try:
+        service.query_range(
+            asset_type="index",
+            code="000300",
+            metric="rolling_pe",
+            requested_from="2026-05-01",
+            requested_to="2026-01-01",
+            fetch_missing=fail_fetch,
+        )
+    except ValueError as exc:
+        assert "from date must be on or before to date" in str(exc)
     else:
         raise AssertionError("Expected ValueError")

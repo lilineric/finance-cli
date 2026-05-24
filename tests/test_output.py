@@ -1,7 +1,7 @@
 import json
 
-from finance_cli.output import format_json, format_text
-from finance_cli.service import MetricQueryResult
+from finance_cli.output import format_json, format_range_json, format_range_text, format_text
+from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 
 
 def test_format_json_uses_stable_keys():
@@ -148,3 +148,71 @@ def test_format_text_includes_new_metric_labels():
     assert "股息率: 3.1" in format_text(dividend)
     assert "PB: 1.8" in format_text(pb)
     assert "收益率: 1.7" in format_text(cn10y)
+
+
+def test_format_range_json_uses_stable_keys_and_raw_values_only():
+    result = MetricRangeQueryResult(
+        "index",
+        "000300",
+        "rolling_pe",
+        "2026-01-01",
+        "2026-05-01",
+        "2026-01-02",
+        "2026-04-30",
+        [
+            ("2026-01-02", 12.3, "akshare"),
+            ("2026-04-30", 12.8, "akshare"),
+        ],
+    )
+
+    payload = json.loads(format_range_json(result))
+
+    assert set(payload) == {
+        "asset_type",
+        "code",
+        "metric",
+        "requested_from",
+        "requested_to",
+        "actual_start_date",
+        "actual_end_date",
+        "data",
+    }
+    assert payload["actual_start_date"] == "2026-01-02"
+    assert payload["actual_end_date"] == "2026-04-30"
+    assert payload["data"] == [
+        {"date": "2026-01-02", "value": 12.3, "source": "akshare"},
+        {"date": "2026-04-30", "value": 12.8, "source": "akshare"},
+    ]
+    assert "percentile" not in json.dumps(payload)
+    assert "sample_count" not in json.dumps(payload)
+    assert "lookback_years" not in json.dumps(payload)
+
+
+def test_format_range_text_omits_percentile_fields():
+    result = MetricRangeQueryResult(
+        "gold",
+        "AU9999",
+        "close",
+        "2026-01-01",
+        "2026-05-01",
+        "2026-01-02",
+        "2026-04-30",
+        [
+            ("2026-01-02", 530.0, "akshare"),
+            ("2026-04-30", 540.0, "akshare"),
+        ],
+    )
+
+    text = format_range_text(result)
+
+    assert "黄金: AU9999" in text
+    assert "请求起始日期: 2026-01-01" in text
+    assert "请求结束日期: 2026-05-01" in text
+    assert "实际起始日期: 2026-01-02" in text
+    assert "实际结束日期: 2026-04-30" in text
+    assert "2026-01-02 530.0 akshare" in text
+    assert "2026-04-30 540.0 akshare" in text
+    assert "历史百分位" not in text
+    assert "回看年数" not in text
+    assert "样本数" not in text
+    assert "样本起始日期" not in text
