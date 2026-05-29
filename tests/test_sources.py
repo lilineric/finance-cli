@@ -170,6 +170,27 @@ def test_fetch_text_reads_http_error_body(monkeypatch):
     assert "detailPE_data" in _fetch_text("https://worldperatio.com/area/vietnam/")
 
 
+def test_fetch_text_decodes_brotli_response(monkeypatch):
+    class Response:
+        headers = {"Content-Encoding": "br"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b"\x0f\x07\x80<html>ok</html>\x03"
+
+    def urlopen(request, timeout):
+        return Response()
+
+    monkeypatch.setattr("finance_cli.sources.urlopen", urlopen)
+
+    assert _fetch_text("https://www.etf.run/index/CSI/930707") == "<html>ok</html>"
+
+
 def test_fetch_index_pe_rows_uses_injected_csindex_history_fetcher(monkeypatch):
     calls = []
 

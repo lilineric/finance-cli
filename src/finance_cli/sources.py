@@ -7,6 +7,7 @@ from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import brotli
 import pandas as pd
 
 from finance_cli.analytics import parse_query_date
@@ -612,12 +613,18 @@ def _fetch_text(url: str) -> str:
     request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urlopen(request, timeout=30) as response:
-            return response.read().decode("utf-8", errors="replace")
+            return _decode_response_text(response.read(), response.headers.get("Content-Encoding"))
     except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
+        body = _decode_response_text(exc.read(), exc.headers.get("Content-Encoding"))
         if exc.code == 500 and body:
             return body
         raise
+
+
+def _decode_response_text(body: bytes, content_encoding: str | None) -> str:
+    if content_encoding and content_encoding.lower() == "br":
+        body = brotli.decompress(body)
+    return body.decode("utf-8", errors="replace")
 
 
 def _html_to_text(html: str) -> str:
