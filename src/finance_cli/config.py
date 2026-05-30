@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = Path("config") / "finance-cli.json"
 class AppConfig:
     sqlite_api_host: str
     sqlite_db: str
+    fred_api_key: str = ""
 
 
 def load_config() -> AppConfig:
@@ -35,4 +36,8 @@ def load_config() -> AppConfig:
     if db.count("/") > 1:
         raise ValueError("sqlite_db may contain at most one directory level")
 
-    return AppConfig(sqlite_api_host=host, sqlite_db=db)
+    return AppConfig(
+        sqlite_api_host=host,
+        sqlite_db=db,
+        fred_api_key=str(data.get("fred_api_key", "")).strip(),
+    )

@@ -36,6 +36,7 @@ FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
 DANJUAN_NDX_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/NDX?day=all"
+DANJUAN_CSI_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
 WORLDPERATIO_PE_BLOCK_PATTERN = re.compile(r"detailPE_data\s*=\s*(\[.*?\]);", re.DOTALL)
 WORLDPERATIO_PE_DATA_PATTERN = re.compile(
@@ -52,10 +53,31 @@ FUND_NAV_TYPES = {
     "unit": ("unit_nav", "单位净值走势"),
     "accumulated": ("accumulated_nav", "累计净值走势"),
 }
+FED_H6_MONTHLY_URL = (
+    "https://www.federalreserve.gov/datadownload/Output.aspx"
+    "?rel=H6&series=798e2796917702a5f8423426ba7e6b42"
+    "&lastobs=&from=&to=&filetype=csv&label=include&layout=seriescolumn"
+)
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
 
 
 class DataSourceError(RuntimeError):
     pass
+
+
+def _to_danjuan_index_code(normalized_code: str) -> str:
+    """Map a normalized CSI index code to the Danjuan exchange-prefixed format.
+
+    >>> _to_danjuan_index_code("000300")
+    'SH000300'
+    >>> _to_danjuan_index_code("399967")
+    'SZ399967'
+    """
+    if normalized_code.startswith("0"):
+        return f"SH{normalized_code}"
+    if normalized_code.startswith(("3", "9")):
+        return f"SZ{normalized_code}"
+    return normalized_code
 
 
 def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
@@ -74,24 +96,13 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
             raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
         return normalize_worldperatio_pe_rows(normalized_code, html)
 
-    if fetcher is None:
-        try:
-            import akshare as ak
-        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
-            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
-
-        fetcher = ak.stock_zh_index_hist_csindex
-
+    danjuan_code = _to_danjuan_index_code(normalized_code)
+    url = DANJUAN_CSI_PE_URL.format(code=danjuan_code)
     try:
-        frame = fetcher(
-            symbol=normalized_code,
-            start_date=CSINDEX_HISTORY_START_DATE,
-            end_date=date.today().strftime("%Y%m%d"),
-        )
+        text = fetcher() if fetcher is not None else _fetch_text(url)
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
-
-    return normalize_index_pe_rows(normalized_code, frame)
+    return normalize_danjuan_index_pe_rows(normalized_code, text)
 
 
 def fetch_index_dividend_yield_rows(
@@ -631,3 +642,188 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"<!--.*?-->", " ", html, flags=re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", unescape(text))
+
+
+def _parse_fed_h6_csv(text: str) -> list[DailyMetric]:
+    """Parse Federal Reserve H.6 monthly M2 CSV into DailyMetric rows.
+
+    The CSV header rows describe series metadata. Data rows start at the
+    sixth row (index 5).  Column ``M2.M`` holds seasonally adjusted M2
+    in billions of USD.
+    """
+    lines = text.splitlines()
+    if len(lines) < 6:
+        raise DataSourceError("Unexpected Federal Reserve H.6 response: too few lines")
+
+    data_lines = lines[5:]
+    if not data_lines:
+        raise DataSourceError("No M2 data rows found in Federal Reserve H.6 response")
+
+    # The first data row names the columns (starts with "Time Period")
+    header = [col.strip().strip('"') for col in data_lines[0].split(",")]
+    if "M2.M" not in header:
+        raise DataSourceError("M2.M column not found in Federal Reserve H.6 response")
+
+    m2_index = header.index("M2.M")
+    rows: list[DailyMetric] = []
+    for line in data_lines[1:]:
+        if not line.strip():
+            continue
+        fields = line.split(",")
+        if len(fields) <= max(m2_index, 0):
+            continue
+        date_value = fields[0].strip()
+        m2_value = fields[m2_index].strip()
+        if not date_value or not m2_value:
+            continue
+        # M2 is in billions of USD
+        rows.append(
+            DailyMetric(
+                "macro",
+                "M2SL",
+                "money_supply",
+                _normalize_fed_h6_date(date_value),
+                _to_float(m2_value),
+                "fed",
+            )
+        )
+
+    if not rows:
+        raise DataSourceError("No valid M2 data parsed from Federal Reserve H.6 response")
+    return rows
+
+
+def _normalize_fed_h6_date(raw: str) -> str:
+    """Convert Fed H.6 date like '1959-01' or '2026-05' to ISO format."""
+    return raw.strip() + "-01"
+
+
+def fetch_m2_rows(
+    api_key: str = "",
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    """Fetch US M2 money supply (monthly, billions of USD) from Federal Reserve H.6."""
+    try:
+        text = fetcher(FED_H6_MONTHLY_URL) if fetcher is not None else _fetch_text(FED_H6_MONTHLY_URL)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch M2 data from Federal Reserve: {exc}") from exc
+    return _parse_fed_h6_csv(text)
+
+
+def fetch_gold_usd_rows(
+    api_key: str = "",
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    """Fetch COMEX gold futures price in USD per troy ounce (daily) via Yahoo Finance."""
+    # Request all available history: period1=0 (1970-01-01), period2=today
+    from datetime import datetime
+    end_ts = int(datetime.now().timestamp())
+    url = f"{YAHOO_CHART_URL}?interval=1d&period1=0&period2={end_ts}"
+    try:
+        text = fetcher(url) if fetcher is not None else _fetch_text(url)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch gold USD rows: {exc}") from exc
+
+    return _normalize_gold_usd_yahoo(text)
+
+
+def _normalize_gold_usd_yahoo(text: str) -> list[DailyMetric]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DataSourceError("Invalid JSON response from Yahoo Finance for gold USD") from exc
+
+    result = payload.get("chart", {}).get("result")
+    if not isinstance(result, list) or not result:
+        raise DataSourceError("No data in Yahoo Finance response for gold USD")
+
+    chart = result[0]
+    timestamps = chart.get("timestamp")
+    quotes = chart.get("indicators", {}).get("quote")
+    if not timestamps or not isinstance(quotes, list) or not quotes:
+        raise DataSourceError("Missing timestamp/quote data in Yahoo Finance response for gold USD")
+
+    closes = quotes[0].get("close")
+    if not closes or len(closes) != len(timestamps):
+        raise DataSourceError("Invalid close-price data in Yahoo Finance response for gold USD")
+
+    rows: list[DailyMetric] = []
+    for ts, close_val in zip(timestamps, closes):
+        if close_val is None:
+            continue
+        date_str = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+        rows.append(
+            DailyMetric(
+                "gold",
+                "XAUUSD",
+                "close",
+                date_str,
+                float(close_val),
+                "yahoo",
+            )
+        )
+
+    if not rows:
+        raise DataSourceError("No valid gold USD data found")
+    return rows
+
+
+def compute_gold_m2_ratio_rows(
+    gold_rows: list[DailyMetric],
+    m2_rows: list[DailyMetric],
+) -> list[DailyMetric]:
+    """Compute gold(USD/oz) / M2(billion USD) ratio for each gold date.
+
+    M2 data is monthly; gold data is daily. For each gold date, the most
+    recent M2 value on or before that date is used.
+    M2 is in billions of USD.
+    """
+    if not gold_rows:
+        raise DataSourceError("No gold USD data available for ratio computation")
+    if not m2_rows:
+        raise DataSourceError("No M2 data available for ratio computation")
+
+    # Sort M2 rows by date; gold rows are assumed sorted by date
+    m2_sorted = sorted(m2_rows, key=lambda r: r.date)
+
+    ratios: list[DailyMetric] = []
+    m2_index = 0
+    current_m2_billions: float | None = None
+
+    for gold_row in gold_rows:
+        # Advance M2 index to find the most recent M2 <= gold date
+        while m2_index < len(m2_sorted) and m2_sorted[m2_index].date <= gold_row.date:
+            current_m2_billions = m2_sorted[m2_index].value
+            m2_index += 1
+
+        if current_m2_billions is None:
+            # No M2 data on or before this gold date — skip
+            continue
+
+        ratio = gold_row.value / current_m2_billions
+
+        ratios.append(
+            DailyMetric(
+                "macro",
+                "GOLD_M2",
+                "ratio",
+                gold_row.date,
+                ratio,
+                "fed",
+            )
+        )
+
+    if not ratios:
+        raise DataSourceError("No overlapping dates between gold USD and M2 data for ratio computation")
+
+    return ratios
+
+
+def fetch_gold_m2_ratio_rows(
+    api_key: str = "",
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    """Fetch gold/M2 ratio by combining gold USD and M2 data."""
+    gold_rows = fetch_gold_usd_rows()
+    m2_rows = fetch_m2_rows()
+    return compute_gold_m2_ratio_rows(gold_rows, m2_rows)

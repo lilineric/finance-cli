@@ -65,6 +65,35 @@ Query China 10-year government bond yield percentile:
 finance cn10y-yield --date 2026-04-20 --years 10
 ```
 
+Query US M2 money supply (no percentile, monthly, billions of USD):
+
+```bash
+finance m2 --date 2026-05-30
+finance m2 --from 2020-01-01 --to 2026-05-30 --json
+```
+
+M2 data is sourced from the Federal Reserve H.6 statistical release (free, no API key required).
+
+Query COMEX gold price in USD per troy ounce (no percentile):
+
+```bash
+finance gold-usd
+finance gold-usd --from 2026-01-01 --to 2026-05-30 --json
+```
+
+Gold USD data is sourced from Yahoo Finance (COMEX gold futures `GC=F`).
+
+Query gold(USD/oz) ÷ M2(billion USD) ratio percentile:
+
+```bash
+finance gold-m2-ratio --years 5
+finance gold-m2-ratio --years 10 --json
+finance gold-m2-ratio --from 2020-01-01 --to 2026-05-30 --json
+```
+
+The ratio divides the daily COMEX gold close price by the most recent monthly M2 value
+(both in USD).  Percentile calculations use the configured lookback window (1–10 years).
+
 Output JSON:
 
 ```bash
@@ -82,6 +111,9 @@ finance gold --from 2026-01-01 --to 2026-05-01 --json
 finance cn10y-yield --from 2026-01-01 --to 2026-05-01 --json
 finance fund-nav --code 017763 --from 2026-01-01 --to 2026-05-01 --json
 finance fund-nav --code 017763 --nav-type accumulated --from 2026-01-01 --to 2026-05-01 --json
+finance m2 --from 2026-01-01 --to 2026-05-30 --json
+finance gold-usd --from 2026-01-01 --to 2026-05-30 --json
+finance gold-m2-ratio --from 2026-01-01 --to 2026-05-30 --json
 ```
 
 Range JSON includes `requested_from`, `requested_to`, `actual_start_date`, `actual_end_date`, and `data`.
@@ -96,6 +128,9 @@ finance sync dividend-yield --code 000300
 finance sync pb --code 801010 --category 一级行业
 finance sync gold
 finance sync cn10y-yield
+finance sync m2
+finance sync gold-usd
+finance sync gold-m2-ratio
 ```
 
 Query commands auto-refresh local data when needed.

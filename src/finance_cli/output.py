@@ -90,6 +90,8 @@ def _asset_label(asset_type: str) -> str:
         return "债券"
     if asset_type == "fund":
         return "基金"
+    if asset_type == "macro":
+        return "宏观"
     return "指数"
 
 
@@ -102,5 +104,7 @@ def _metric_label(metric: str) -> str:
         "close": "收盘价",
         "unit_nav": "单位净值",
         "accumulated_nav": "累计净值",
+        "money_supply": "M2货币供应量(十亿美元)",
+        "ratio": "黄金/M2比值",
     }
     return labels.get(metric, metric)

@@ -216,3 +216,37 @@ def test_format_range_text_omits_percentile_fields():
     assert "回看年数" not in text
     assert "样本数" not in text
     assert "样本起始日期" not in text
+
+
+def test_format_text_includes_macro_labels():
+    m2_result = MetricQueryResult(
+        "macro", "M2SL", "money_supply", "2026-05-22", "2026-05-01",
+        None, 21500.5, None, None, "fred", None,
+    )
+    ratio_result = MetricQueryResult(
+        "macro", "GOLD_M2", "ratio", "2026-05-22", "2026-05-20",
+        "2020-01-02", 118.5, 45.0, 1500, "fred", 5,
+    )
+
+    m2_text = format_text(m2_result)
+    ratio_text = format_text(ratio_result)
+
+    assert "宏观: M2SL" in m2_text
+    assert "M2货币供应量(十亿美元): 21500.5" in m2_text
+    assert "宏观: GOLD_M2" in ratio_text
+    assert "黄金/M2比值: 118.5" in ratio_text
+    assert "历史百分位: 45.0%" in ratio_text
+
+
+def test_format_output_omits_percentile_for_m2_value_only():
+    result = MetricQueryResult(
+        "macro", "M2SL", "money_supply", "2026-05-22", "2026-05-01",
+        None, 21500.5, None, None, "fred", None,
+    )
+
+    payload = json.loads(format_json(result))
+
+    assert "percentile" not in payload
+    assert "lookback_years" not in payload
+    assert "sample_count" not in payload
+    assert "sample_start_date" not in payload

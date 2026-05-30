@@ -607,10 +607,10 @@ def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):
 
 
 def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
-    def sync(self, fetch_rows):
+    def replace_sync(self, asset_type, code, metric, fetch_rows):
         return 3
 
-    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+    monkeypatch.setattr("finance_cli.service.MetricsService.replace_sync", replace_sync)
 
     result = runner.invoke(app, ["sync", "pe", "--code", "000300"])
 
@@ -647,28 +647,31 @@ def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
     assert "同步 3 条记录" in result.output
 
 
-def test_sync_pe_keeps_upsert_sync_for_non_ndx(monkeypatch, tmp_path):
+def test_sync_pe_uses_replace_sync_for_csi_codes(monkeypatch, tmp_path):
+    """After switching to Danjuan, all PE syncs use replace_sync for clean data."""
     seen = {}
 
-    def sync(self, fetch_rows):
+    def replace_sync(self, asset_type, code, metric, fetch_rows):
         rows = list(fetch_rows())
+        seen["asset_type"] = asset_type
+        seen["sync_code"] = code
+        seen["metric"] = metric
         seen["rows"] = rows
         return 2
-
-    def replace_sync(self, asset_type, code, metric, fetch_rows):
-        raise AssertionError("replace_sync should not be called")
 
     def fetch_index_pe_rows(code):
         seen["code"] = code
         return []
 
-    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
     monkeypatch.setattr("finance_cli.service.MetricsService.replace_sync", replace_sync)
     monkeypatch.setattr("finance_cli.cli.fetch_index_pe_rows", fetch_index_pe_rows)
 
     result = runner.invoke(app, ["sync", "pe", "--code", "000300"])
 
     assert result.exit_code == 0
+    assert seen["asset_type"] == "index"
+    assert seen["sync_code"] == "000300"
+    assert seen["metric"] == "rolling_pe"
     assert seen["code"] == "000300"
     assert seen["rows"] == []
     assert "同步 2 条记录" in result.output
@@ -1123,3 +1126,215 @@ def test_range_mode_rejects_from_after_to(monkeypatch, tmp_path):
             "message": "from date must be on or before to date",
         }
     }
+
+
+# ── M2 / Gold USD / Gold-M2-Ratio CLI tests ──
+
+
+def test_m2_command_outputs_json(monkeypatch):
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-01", None, 21500.5, None, None, "fed", None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["m2", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "macro"
+    assert payload["code"] == "M2SL"
+    assert payload["metric"] == "money_supply"
+    assert payload["value"] == 21500.5
+    assert "percentile" not in payload
+    assert "lookback_years" not in payload
+
+
+def test_m2_command_outputs_text(monkeypatch):
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-01", None, 21500.5, None, None, "fed", None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["m2"])
+
+    assert result.exit_code == 0
+    assert "宏观: M2SL" in result.output
+    assert "M2货币供应量(十亿美元): 21500.5" in result.output
+    assert "历史百分位" not in result.output
+
+
+def test_gold_usd_command_outputs_json(monkeypatch):
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-20", None, 3200.0, None, None, "akshare", None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["gold-usd", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "gold"
+    assert payload["code"] == "XAUUSD"
+    assert payload["metric"] == "close"
+    assert payload["value"] == 3200.0
+    assert "percentile" not in payload
+
+
+def test_gold_m2_ratio_command_outputs_json(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-20", "2021-01-02", 118.5, 45.0, 1500,
+            "fed", years,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold-m2-ratio", "--years", "5", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "macro"
+    assert payload["code"] == "GOLD_M2"
+    assert payload["metric"] == "ratio"
+    assert payload["value"] == 118.5
+    assert payload["percentile"] == 45.0
+    assert payload["lookback_years"] == 5
+
+
+def test_gold_m2_ratio_command_outputs_text(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-20", "2021-01-02", 118.5, 45.0, 1500,
+            "fed", years,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["gold-m2-ratio", "--years", "5"])
+
+    assert result.exit_code == 0
+    assert "宏观: GOLD_M2" in result.output
+    assert "黄金/M2比值: 118.5" in result.output
+    assert "历史百分位: 45.0%" in result.output
+    assert "回看年数: 5" in result.output
+
+
+def test_m2_range_command_outputs_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-01-02", "2026-04-30",
+            [("2026-04-30", 21500.5, "fed")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["m2", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "macro", "code": "M2SL", "metric": "money_supply"}
+    payload = json.loads(result.output)
+    assert payload["data"] == [{"date": "2026-04-30", "value": 21500.5, "source": "fed"}]
+
+
+def test_gold_usd_range_command_outputs_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-01-02", "2026-04-30",
+            [("2026-04-30", 3200.0, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["gold-usd", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "gold", "code": "XAUUSD", "metric": "close"}
+
+
+def test_gold_m2_ratio_range_command_outputs_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-01-02", "2026-04-30",
+            [("2026-04-30", 118.5, "fed")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["gold-m2-ratio", "--from", "2026-01-01", "--to", "2026-05-01", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "macro", "code": "GOLD_M2", "metric": "ratio"}
+
+
+def test_sync_m2_outputs_inserted_count(monkeypatch):
+    def sync(self, fetch_rows):
+        return 120
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "m2"])
+
+    assert result.exit_code == 0
+    assert "同步 120 条记录" in result.output
+
+
+def test_sync_gold_usd_outputs_inserted_count(monkeypatch):
+    def sync(self, fetch_rows):
+        return 5000
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "gold-usd"])
+
+    assert result.exit_code == 0
+    assert "同步 5000 条记录" in result.output
+
+
+def test_sync_gold_m2_ratio_outputs_inserted_count(monkeypatch):
+    def sync(self, fetch_rows):
+        return 4500
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "gold-m2-ratio"])
+
+    assert result.exit_code == 0
+    assert "同步 4500 条记录" in result.output
+
+
+def test_cli_help_shows_new_commands(monkeypatch):
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "m2" in result.output
+    assert "gold-usd" in result.output
+    assert "gold-m2-ratio" in result.output

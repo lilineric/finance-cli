@@ -15,12 +15,16 @@ from finance_cli.output import format_json, format_range_json, format_range_text
 from finance_cli.service import MetricsService
 from finance_cli.sources import (
     DataSourceError,
+    compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
     fetch_gold_rows,
+    fetch_gold_m2_ratio_rows,
+    fetch_gold_usd_rows,
     fetch_fund_nav_rows,
     fetch_index_dividend_yield_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
+    fetch_m2_rows,
     normalize_index_pe_code,
     normalize_csindex_code,
     fetch_sw_index_pb_rows,
@@ -421,20 +425,145 @@ def cn10y_yield(
     typer.echo(format_json(result) if json_output else format_text(result))
 
 
+@app.command()
+def m2(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query US M2 money supply (no percentile)."""
+    try:
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date)
+            result = _service().query_range(
+                "macro",
+                "M2SL",
+                "money_supply",
+                requested_from,
+                requested_to,
+                fetch_m2_rows,
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        result = _service().query_value(
+            "macro",
+            "M2SL",
+            "money_supply",
+            query_date,
+            fetch_m2_rows,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
+@app.command("gold-usd")
+def gold_usd(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query gold price in USD per troy ounce (no percentile)."""
+    try:
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date)
+            result = _service().query_range(
+                "gold",
+                "XAUUSD",
+                "close",
+                requested_from,
+                requested_to,
+                fetch_gold_usd_rows,
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        result = _service().query_value(
+            "gold",
+            "XAUUSD",
+            "close",
+            query_date,
+            fetch_gold_usd_rows,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
+@app.command("gold-m2-ratio")
+def gold_m2_ratio(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    years: int | None = typer.Option(None, "--years"),
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query gold(USD/oz) / M2(billion USD) ratio percentile."""
+    try:
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date, years)
+            result = _service().query_range(
+                "macro",
+                "GOLD_M2",
+                "ratio",
+                requested_from,
+                requested_to,
+                fetch_gold_m2_ratio_rows,
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        years = _default_years(years)
+        validate_years(years)
+
+        service = _service()
+
+        def fetch_ratio():
+            gold_rows = list(fetch_gold_usd_rows())
+            m2_rows = list(fetch_m2_rows())
+            service.repository.upsert_metrics(gold_rows)
+            service.repository.upsert_metrics(m2_rows)
+            return compute_gold_m2_ratio_rows(gold_rows, m2_rows)
+
+        result = service.query(
+            "macro",
+            "GOLD_M2",
+            "ratio",
+            query_date,
+            years,
+            fetch_ratio,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
 @sync_app.command("pe")
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index rolling PE history."""
     try:
         normalized_code = normalize_index_pe_code(code)
-        if normalized_code == "NDX":
-            inserted = _service().replace_sync(
-                "index",
-                normalized_code,
-                "rolling_pe",
-                lambda: fetch_index_pe_rows(normalized_code),
-            )
-        else:
-            inserted = _service().sync(lambda: fetch_index_pe_rows(normalized_code))
+        inserted = _service().replace_sync(
+            "index",
+            normalized_code,
+            "rolling_pe",
+            lambda: fetch_index_pe_rows(normalized_code),
+        )
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc
     except ValueError as exc:
@@ -492,6 +621,54 @@ def sync_cn10y_yield() -> None:
     """Synchronize China 10-year government bond yield history."""
     try:
         inserted = _service().sync(fetch_cn10y_yield_rows)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
+@sync_app.command("m2")
+def sync_m2() -> None:
+    """Synchronize US M2 money supply history."""
+    try:
+        inserted = _service().sync(fetch_m2_rows)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
+@sync_app.command("gold-usd")
+def sync_gold_usd() -> None:
+    """Synchronize gold USD/oz price history."""
+    try:
+        inserted = _service().sync(fetch_gold_usd_rows)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
+@sync_app.command("gold-m2-ratio")
+def sync_gold_m2_ratio() -> None:
+    """Synchronize gold/M2 ratio history (also syncs gold USD and M2 data)."""
+    try:
+        service = _service()
+
+        def fetch_all():
+            gold_rows = list(fetch_gold_usd_rows())
+            m2_rows = list(fetch_m2_rows())
+            service.repository.upsert_metrics(gold_rows)
+            service.repository.upsert_metrics(m2_rows)
+            return compute_gold_m2_ratio_rows(gold_rows, m2_rows)
+
+        inserted = service.sync(fetch_all)
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc
     except ValueError as exc:
