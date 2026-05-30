@@ -15,8 +15,10 @@ from finance_cli.output import format_json, format_range_json, format_range_text
 from finance_cli.service import MetricsService
 from finance_cli.sources import (
     DataSourceError,
+    compute_dividend_yield_spread_rows,
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
+    fetch_dividend_yield_spread_rows,
     fetch_gold_rows,
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
@@ -553,6 +555,90 @@ def gold_m2_ratio(
     typer.echo(format_json(result) if json_output else format_text(result))
 
 
+@app.command("dividend-yield-spread")
+def dividend_yield_spread(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    code: str = typer.Option(..., "--code"),
+    years: int | None = typer.Option(None, "--years"),
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query dividend yield spread (index dividend yield - CN10Y bond yield) percentile."""
+    try:
+        normalized_code = normalize_csindex_code(code)
+
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date, years)
+            result = _service().query_range(
+                "spread",
+                normalized_code,
+                "dividend_yield_spread",
+                requested_from,
+                requested_to,
+                lambda: fetch_dividend_yield_spread_rows(normalized_code),
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        years = _default_years(years)
+        validate_years(years)
+
+        service = _service()
+
+        def fetch_spread():
+            # Sync latest dividend yield from API (incremental update)
+            fresh_div = list(fetch_index_dividend_yield_rows(normalized_code))
+            service.repository.upsert_metrics(fresh_div)
+            # Read full dividend yield history from DB (may span years from past syncs)
+            div_rows = service.repository.metrics_between(
+                "index", normalized_code, "dividend_yield", "1990-01-01", query_date
+            )
+            # Sync CN10Y yield
+            cn10y_rows = list(fetch_cn10y_yield_rows())
+            service.repository.upsert_metrics(cn10y_rows)
+            return compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+        result = service.query(
+            "spread",
+            normalized_code,
+            "dividend_yield_spread",
+            query_date,
+            years,
+            fetch_spread,
+            ensure_lookback_coverage=True,
+            minimum_lookback_years=3,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    if json_output:
+        payload = json.loads(format_json(result))
+        payload["dividend_yield"] = _lookup_value(
+            service, "index", normalized_code, "dividend_yield", result.actual_date
+        )
+        payload["cn10y_yield"] = _lookup_value(
+            service, "bond", "CN10Y", "yield", result.actual_date
+        )
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        text = format_text(result)
+        div_yield = _lookup_value(
+            service, "index", normalized_code, "dividend_yield", result.actual_date
+        )
+        cn10y = _lookup_value(
+            service, "bond", "CN10Y", "yield", result.actual_date
+        )
+        if div_yield is not None:
+            text += f"\n股息率: {div_yield}"
+        if cn10y is not None:
+            text += f"\n10年期国债收益率: {cn10y}"
+        typer.echo(text)
+
+
 @sync_app.command("pe")
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index rolling PE history."""
@@ -675,6 +761,47 @@ def sync_gold_m2_ratio() -> None:
         raise _value_click_exception(exc) from exc
 
     typer.echo(f"同步 {inserted} 条记录")
+
+
+@sync_app.command("dividend-yield-spread")
+def sync_dividend_yield_spread(code: str = typer.Option(..., "--code")) -> None:
+    """Synchronize dividend yield spread history (also syncs dividend yield and CN10Y data)."""
+    try:
+        normalized_code = normalize_csindex_code(code)
+        service = _service()
+
+        def fetch_all():
+            # Sync latest dividend yield from API
+            fresh_div = list(fetch_index_dividend_yield_rows(normalized_code))
+            service.repository.upsert_metrics(fresh_div)
+            # Read full dividend yield history from DB
+            div_rows = service.repository.metrics_between(
+                "index", normalized_code, "dividend_yield", "1990-01-01", "2099-12-31"
+            )
+            # Sync CN10Y yield
+            cn10y_rows = list(fetch_cn10y_yield_rows())
+            service.repository.upsert_metrics(cn10y_rows)
+            return compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+        inserted = service.sync(fetch_all)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
+def _lookup_value(
+    service: MetricsService,
+    asset_type: str,
+    code: str,
+    metric: str,
+    query_date: str,
+) -> float | None:
+    """Look up a single metric value from the repository on a given date."""
+    rows = service.repository.metrics_between(asset_type, code, metric, query_date, query_date)
+    return rows[0].value if rows else None
 
 
 def _validate_sw_category(category: str) -> None:

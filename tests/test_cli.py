@@ -3,7 +3,7 @@ import json
 from typer.testing import CliRunner
 
 from finance_cli.cli import app
-from finance_cli.db import SQLiteApiError
+from finance_cli.db import DailyMetric, SQLiteApiError
 from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 from finance_cli.sources import DataSourceError
 
@@ -1338,3 +1338,133 @@ def test_cli_help_shows_new_commands(monkeypatch):
     assert "m2" in result.output
     assert "gold-usd" in result.output
     assert "gold-m2-ratio" in result.output
+    assert "dividend-yield-spread" in result.output
+
+
+def test_dividend_yield_spread_command_outputs_json(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.88, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        if metric == "dividend_yield":
+            return [DailyMetric("index", code, metric, "2026-05-29", 4.5, "akshare")]
+        if metric == "yield":
+            return [DailyMetric("bond", "CN10Y", metric, "2026-05-29", 1.62, "akshare")]
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["dividend-yield-spread", "--code", "H30269", "--years", "5", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "spread"
+    assert payload["code"] == "H30269"
+    assert payload["metric"] == "dividend_yield_spread"
+    assert payload["value"] == 2.88
+    assert payload["percentile"] == 35.0
+    assert payload["lookback_years"] == 5
+    assert payload["dividend_yield"] == 4.5
+    assert payload["cn10y_yield"] == 1.62
+
+
+def test_dividend_yield_spread_command_outputs_text(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.88, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        if metric == "dividend_yield":
+            return [DailyMetric("index", code, metric, "2026-05-29", 4.5, "akshare")]
+        if metric == "yield":
+            return [DailyMetric("bond", "CN10Y", metric, "2026-05-29", 1.62, "akshare")]
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["dividend-yield-spread", "--code", "H30269", "--years", "5"])
+
+    assert result.exit_code == 0
+    assert "利差: H30269" in result.output
+    assert "股息率-国债收益率利差: 2.88" in result.output
+    assert "历史百分位: 35.0%" in result.output
+    assert "回看年数: 5" in result.output
+    assert "股息率: 4.5" in result.output
+    assert "10年期国债收益率: 1.62" in result.output
+
+
+def test_dividend_yield_spread_command_with_lowercase_h_code(monkeypatch):
+    seen_code = {}
+
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        seen_code["code"] = code
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.88, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["dividend-yield-spread", "--code", "h30269", "--json"])
+
+    assert result.exit_code == 0
+    assert seen_code["code"] == "H30269"
+    payload = json.loads(result.output)
+    assert payload["code"] == "H30269"
+
+
+def test_dividend_yield_spread_range_command_outputs_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-01-02", "2026-04-30",
+            [("2026-04-30", 2.88, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["dividend-yield-spread", "--code", "H30269", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "spread", "code": "H30269", "metric": "dividend_yield_spread"}
+
+
+def test_sync_dividend_yield_spread_outputs_inserted_count(monkeypatch):
+    def sync(self, fetch_rows):
+        return 2000
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "dividend-yield-spread", "--code", "000300"])
+
+    assert result.exit_code == 0
+    assert "同步 2000 条记录" in result.output

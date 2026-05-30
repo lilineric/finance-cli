@@ -6,8 +6,10 @@ import pytest
 
 from finance_cli.sources import (
     DataSourceError,
+    compute_dividend_yield_spread_rows,
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
+    fetch_dividend_yield_spread_rows,
     fetch_gold_rows,
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
@@ -875,3 +877,113 @@ def test_fetch_gold_m2_ratio_rows_orchestrates_both_sources(monkeypatch):
     assert rows[0].code == "GOLD_M2"
     # 2400 / 20500 ≈ 0.1171
     assert abs(rows[0].value - 2400.0 / 20500.0) < 0.001
+
+
+# --- dividend yield spread compute tests ---
+
+
+def test_compute_dividend_yield_spread_rows_aligns_by_exact_date():
+    div_rows = [
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-02", 4.5, "akshare"),
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-03", 4.6, "akshare"),
+        DailyMetric("index", "H30269", "dividend_yield", "2025-02-01", 4.8, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 1.7, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-03", 1.8, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-02-01", 1.6, "akshare"),
+    ]
+
+    spreads = compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+    assert len(spreads) == 3
+    assert [(row.asset_type, row.code, row.metric, row.date, round(row.value, 2), row.source) for row in spreads] == [
+        ("spread", "H30269", "dividend_yield_spread", "2025-01-02", 2.80, "akshare"),
+        ("spread", "H30269", "dividend_yield_spread", "2025-01-03", 2.80, "akshare"),
+        ("spread", "H30269", "dividend_yield_spread", "2025-02-01", 3.20, "akshare"),
+    ]
+
+
+def test_compute_dividend_yield_spread_rows_skips_nonmatching_dates():
+    div_rows = [
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-01", 4.0, "akshare"),
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-02", 4.5, "akshare"),
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-04", 4.2, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 1.7, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-03", 1.8, "akshare"),
+    ]
+
+    spreads = compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+    # Only 2025-01-02 matches; 01-01 (div only), 01-03 (cn10y only), 01-04 (div only) are skipped
+    assert len(spreads) == 1
+    assert spreads[0].date == "2025-01-02"
+    assert abs(spreads[0].value - 2.8) < 0.01
+
+
+def test_compute_dividend_yield_spread_rows_handles_unsorted_input():
+    div_rows = [
+        DailyMetric("index", "H30269", "dividend_yield", "2025-02-01", 4.8, "akshare"),
+        DailyMetric("index", "H30269", "dividend_yield", "2025-01-02", 4.5, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 1.7, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-02-01", 1.6, "akshare"),
+    ]
+
+    spreads = compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+    assert len(spreads) == 2
+    assert spreads[0].date == "2025-01-02"
+    assert spreads[1].date == "2025-02-01"
+
+
+def test_compute_dividend_yield_spread_rows_raises_on_empty_div_yield():
+    with pytest.raises(DataSourceError, match="No dividend yield data"):
+        compute_dividend_yield_spread_rows(
+            [],
+            [DailyMetric("bond", "CN10Y", "yield", "2025-01-01", 1.7, "akshare")],
+        )
+
+
+def test_compute_dividend_yield_spread_rows_raises_on_empty_cn10y():
+    with pytest.raises(DataSourceError, match="No CN10Y yield data"):
+        compute_dividend_yield_spread_rows(
+            [DailyMetric("index", "H30269", "dividend_yield", "2025-01-02", 4.5, "akshare")],
+            [],
+        )
+
+
+def test_compute_dividend_yield_spread_rows_raises_on_no_overlap():
+    div_rows = [
+        DailyMetric("index", "H30269", "dividend_yield", "2024-12-31", 4.0, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-01", 1.7, "akshare"),
+    ]
+
+    with pytest.raises(DataSourceError, match="No overlapping dates"):
+        compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+
+def test_fetch_dividend_yield_spread_rows_orchestrates_both_sources(monkeypatch):
+    """Verify fetch_dividend_yield_spread_rows fetches both sources and computes spread."""
+
+    def mock_div(code):
+        return [DailyMetric("index", code, "dividend_yield", "2025-01-02", 4.5, "akshare")]
+
+    def mock_cn10y():
+        return [DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 1.7, "akshare")]
+
+    monkeypatch.setattr("finance_cli.sources.fetch_index_dividend_yield_rows", mock_div)
+    monkeypatch.setattr("finance_cli.sources.fetch_cn10y_yield_rows", mock_cn10y)
+
+    rows = fetch_dividend_yield_spread_rows("H30269")
+
+    assert len(rows) == 1
+    assert rows[0].asset_type == "spread"
+    assert rows[0].code == "H30269"
+    assert rows[0].metric == "dividend_yield_spread"
+    assert abs(rows[0].value - 2.8) < 0.01

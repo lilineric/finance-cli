@@ -35,6 +35,7 @@ FUND_NAV_DATE_COLUMNS = ("净值日期", "日期", "date", "trade_date")
 FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
+_AKSHARE_PE_INDEX_CODES: frozenset[str] = frozenset({"930707"})
 DANJUAN_NDX_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/NDX?day=all"
 DANJUAN_CSI_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
@@ -82,6 +83,26 @@ def _to_danjuan_index_code(normalized_code: str) -> str:
 
 def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None = None) -> list[DailyMetric]:
     normalized_code = normalize_index_pe_code(code)
+
+    if normalized_code in _AKSHARE_PE_INDEX_CODES:
+        if fetcher is None:
+            try:
+                import akshare as ak
+            except Exception as exc:
+                raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+            _fetcher = ak.stock_zh_index_hist_csindex
+        else:
+            _fetcher = fetcher
+        try:
+            frame = _fetcher(
+                symbol=normalized_code,
+                start_date=CSINDEX_HISTORY_START_DATE,
+                end_date=date.today().strftime("%Y%m%d"),
+            )
+        except Exception as exc:
+            raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
+        return normalize_index_pe_rows(normalized_code, frame)
+
     if normalized_code == "NDX":
         try:
             text = fetcher() if fetcher is not None else _fetch_text(DANJUAN_NDX_PE_URL)
@@ -827,3 +848,62 @@ def fetch_gold_m2_ratio_rows(
     gold_rows = fetch_gold_usd_rows()
     m2_rows = fetch_m2_rows()
     return compute_gold_m2_ratio_rows(gold_rows, m2_rows)
+
+
+def compute_dividend_yield_spread_rows(
+    div_rows: list[DailyMetric],
+    cn10y_rows: list[DailyMetric],
+) -> list[DailyMetric]:
+    """Compute dividend yield - CN10Y yield spread for each matching date.
+
+    Both dividend yield and CN10Y yield are daily data. Exact date matching
+    is used: only dates where both data points exist produce a spread value.
+    """
+    if not div_rows:
+        raise DataSourceError("No dividend yield data available for spread computation")
+    if not cn10y_rows:
+        raise DataSourceError("No CN10Y yield data available for spread computation")
+
+    div_sorted = sorted(div_rows, key=lambda r: r.date)
+    cn10y_sorted = sorted(cn10y_rows, key=lambda r: r.date)
+
+    spreads: list[DailyMetric] = []
+    i = 0
+    j = 0
+
+    while i < len(div_sorted) and j < len(cn10y_sorted):
+        div_date = div_sorted[i].date
+        cn10y_date = cn10y_sorted[j].date
+
+        if div_date == cn10y_date:
+            spread = div_sorted[i].value - cn10y_sorted[j].value
+            spreads.append(
+                DailyMetric(
+                    "spread",
+                    div_sorted[i].code,
+                    "dividend_yield_spread",
+                    div_date,
+                    spread,
+                    "akshare",
+                )
+            )
+            i += 1
+            j += 1
+        elif div_date < cn10y_date:
+            i += 1
+        else:
+            j += 1
+
+    if not spreads:
+        raise DataSourceError(
+            "No overlapping dates between dividend yield and CN10Y data for spread computation"
+        )
+
+    return spreads
+
+
+def fetch_dividend_yield_spread_rows(code: str) -> list[DailyMetric]:
+    """Fetch dividend yield spread by combining index dividend yield and CN10Y yield data."""
+    div_rows = fetch_index_dividend_yield_rows(code)
+    cn10y_rows = fetch_cn10y_yield_rows()
+    return compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
