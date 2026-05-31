@@ -35,7 +35,7 @@ FUND_NAV_DATE_COLUMNS = ("净值日期", "日期", "date", "trade_date")
 FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
-_AKSHARE_PE_INDEX_CODES: frozenset[str] = frozenset({"930707"})
+_AKSHARE_PE_INDEX_CODES: frozenset[str] = frozenset({"930707", "990001", "930713"})
 DANJUAN_NDX_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/NDX?day=all"
 DANJUAN_CSI_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
