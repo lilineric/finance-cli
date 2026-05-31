@@ -19,6 +19,8 @@ def format_json(result: MetricQueryResult) -> str:
         "coverage_status": result.coverage_status,
         "effective_years": result.effective_years,
     }
+    if result.stale:
+        payload["stale"] = True
     return json.dumps(
         {key: value for key, value in payload.items() if value is not None},
         ensure_ascii=False,
@@ -39,6 +41,8 @@ def format_range_json(result: MetricRangeQueryResult) -> str:
             for row_date, value, source in result.data
         ],
     }
+    if result.stale:
+        payload["stale"] = True
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -56,6 +60,8 @@ def format_range_text(result: MetricRangeQueryResult) -> str:
         f"{row_date} {value} {source}"
         for row_date, value, source in result.data
     )
+    if result.stale:
+        lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
     return "\n".join(lines)
 
 
@@ -80,6 +86,8 @@ def format_text(result: MetricQueryResult) -> str:
         lines.append(f"样本数: {result.sample_count}")
     if result.sample_start_date is not None:
         lines.append(f"样本起始日期: {result.sample_start_date}")
+    if result.stale:
+        lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
     return "\n".join(lines)
 
 

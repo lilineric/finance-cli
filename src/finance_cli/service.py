@@ -9,6 +9,7 @@ from finance_cli.analytics import (
     validate_years,
 )
 from finance_cli.db import DailyMetric, MetricsRepository
+from finance_cli.sources import DataSourceError
 
 
 LOOKBACK_COVERAGE_GRACE_DAYS = 7
@@ -30,6 +31,7 @@ class MetricQueryResult:
     lookback_years: int | None
     coverage_status: str | None = None
     effective_years: float | None = None
+    stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class MetricRangeQueryResult:
     actual_start_date: str
     actual_end_date: str
     data: list[tuple[str, float, str]]
+    stale: bool = False
 
 
 class MetricsService:
@@ -87,19 +90,25 @@ class MetricsService:
             metric,
             requested_date_text,
         )
+        stale = False
         if actual_date is None or not self._has_local_data_on_or_after(
             asset_type,
             code,
             metric,
             requested_date_text,
         ):
-            self.repository.upsert_metrics(list(fetch_missing()))
-            actual_date = self.repository.latest_date_on_or_before(
-                asset_type,
-                code,
-                metric,
-                requested_date_text,
-            )
+            try:
+                self.repository.upsert_metrics(list(fetch_missing()))
+                actual_date = self.repository.latest_date_on_or_before(
+                    asset_type,
+                    code,
+                    metric,
+                    requested_date_text,
+                )
+            except DataSourceError:
+                if actual_date is None:
+                    raise
+                stale = True
 
         if actual_date is None:
             raise ValueError(
@@ -116,14 +125,17 @@ class MetricsService:
             actual_date,
         )
         if ensure_lookback_coverage and rows and _has_incomplete_lookback(rows[0].date, start_date):
-            self.repository.upsert_metrics(list(fetch_missing()))
-            actual_date = self.repository.latest_date_on_or_before(
-                asset_type,
-                code,
-                metric,
-                requested_date_text,
-            )
-            if actual_date is None:
+            try:
+                self.repository.upsert_metrics(list(fetch_missing()))
+                actual_date = self.repository.latest_date_on_or_before(
+                    asset_type,
+                    code,
+                    metric,
+                    requested_date_text,
+                )
+            except DataSourceError:
+                stale = True
+            if actual_date is None and not stale:
                 raise ValueError(
                     f"No data available for {asset_type} {code} {metric} on or before {requested_date_text}"
                 )
@@ -145,7 +157,9 @@ class MetricsService:
         effective_years = None
         if ensure_lookback_coverage and has_incomplete_lookback:
             minimum_start_date = _minimum_start_date(parsed_actual_date, minimum_lookback_years)
-            if minimum_start_date is None or _has_incomplete_lookback(rows[0].date, minimum_start_date):
+            if not stale and (
+                minimum_start_date is None or _has_incomplete_lookback(rows[0].date, minimum_start_date)
+            ):
                 minimum_text = "" if minimum_start_date is None else f"minimum_start_date={minimum_start_date}, "
                 raise ValueError(
                     "Sample coverage is incomplete: "
@@ -171,6 +185,7 @@ class MetricsService:
             lookback_years=validated_years,
             coverage_status=coverage_status,
             effective_years=effective_years,
+            stale=stale,
         )
 
     def query_value(
@@ -192,6 +207,7 @@ class MetricsService:
             metric,
             requested_date_text,
         )
+        stale = False
         if actual_date is None or (
             refresh_stale
             and not self._has_local_data_on_or_after(
@@ -201,13 +217,18 @@ class MetricsService:
                 requested_date_text,
             )
         ):
-            self.repository.upsert_metrics(list(fetch_missing()))
-            actual_date = self.repository.latest_date_on_or_before(
-                asset_type,
-                code,
-                metric,
-                requested_date_text,
-            )
+            try:
+                self.repository.upsert_metrics(list(fetch_missing()))
+                actual_date = self.repository.latest_date_on_or_before(
+                    asset_type,
+                    code,
+                    metric,
+                    requested_date_text,
+                )
+            except DataSourceError:
+                if actual_date is None:
+                    raise
+                stale = True
 
         if actual_date is None:
             raise ValueError(
@@ -239,6 +260,7 @@ class MetricsService:
             sample_count=None,
             source=current_row.source,
             lookback_years=None,
+            stale=stale,
         )
 
     def query_range(
@@ -266,20 +288,26 @@ class MetricsService:
             from_text,
             to_text,
         )
+        stale = False
         if not self._has_local_data_on_or_after(
             asset_type,
             code,
             metric,
             to_text,
         ):
-            self.repository.upsert_metrics(list(fetch_missing()))
-            rows = self.repository.metrics_between(
-                asset_type,
-                code,
-                metric,
-                from_text,
-                to_text,
-            )
+            try:
+                self.repository.upsert_metrics(list(fetch_missing()))
+                rows = self.repository.metrics_between(
+                    asset_type,
+                    code,
+                    metric,
+                    from_text,
+                    to_text,
+                )
+            except DataSourceError:
+                if not rows:
+                    raise
+                stale = True
 
         if not rows:
             raise ValueError(
@@ -295,6 +323,7 @@ class MetricsService:
             actual_start_date=rows[0].date,
             actual_end_date=rows[-1].date,
             data=[(row.date, row.value, row.source) for row in rows],
+            stale=stale,
         )
 
     def _has_local_data_on_or_after(
