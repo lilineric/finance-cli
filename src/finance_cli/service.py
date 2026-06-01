@@ -13,6 +13,7 @@ from finance_cli.sources import DataSourceError
 
 
 LOOKBACK_COVERAGE_GRACE_DAYS = 7
+STALE_FALLBACK_MAX_AGE_DAYS = 7
 DAYS_PER_YEAR = 365.2425
 
 
@@ -114,6 +115,14 @@ class MetricsService:
             raise ValueError(
                 f"No data available for {asset_type} {code} {metric} on or before {requested_date_text}"
             )
+        if stale:
+            _raise_if_stale_fallback_too_old(
+                asset_type,
+                code,
+                metric,
+                requested_date_text,
+                actual_date,
+            )
 
         parsed_actual_date = parse_query_date(actual_date)
         start_date = start_date_for_years(parsed_actual_date, validated_years).isoformat()
@@ -148,6 +157,14 @@ class MetricsService:
                 start_date,
                 actual_date,
             )
+            if stale:
+                _raise_if_stale_fallback_too_old(
+                    asset_type,
+                    code,
+                    metric,
+                    requested_date_text,
+                    actual_date,
+                )
         if not rows:
             raise ValueError(
                 f"No data available for {asset_type} {code} {metric} between {start_date} and {actual_date}"
@@ -234,6 +251,14 @@ class MetricsService:
             raise ValueError(
                 f"No data available for {asset_type} {code} {metric} on or before {requested_date_text}"
             )
+        if stale:
+            _raise_if_stale_fallback_too_old(
+                asset_type,
+                code,
+                metric,
+                requested_date_text,
+                actual_date,
+            )
 
         rows = self.repository.metrics_between(
             asset_type,
@@ -313,6 +338,14 @@ class MetricsService:
             raise ValueError(
                 f"No data available for {asset_type} {code} {metric} between {from_text} and {to_text}"
             )
+        if stale:
+            _raise_if_stale_fallback_too_old(
+                asset_type,
+                code,
+                metric,
+                to_text,
+                rows[-1].date,
+            )
 
         return MetricRangeQueryResult(
             asset_type=asset_type,
@@ -348,6 +381,24 @@ def _has_incomplete_lookback(sample_start_date: str, expected_start_date: str) -
     sample_start = parse_query_date(sample_start_date)
     expected_start = parse_query_date(expected_start_date)
     return (sample_start - expected_start).days > LOOKBACK_COVERAGE_GRACE_DAYS
+
+
+def _raise_if_stale_fallback_too_old(
+    asset_type: str,
+    code: str,
+    metric: str,
+    requested_date: str,
+    actual_date: str,
+) -> None:
+    requested = parse_query_date(requested_date)
+    actual = parse_query_date(actual_date)
+    if (requested - actual).days >= STALE_FALLBACK_MAX_AGE_DAYS:
+        raise ValueError(
+            "Fallback data is too old: "
+            f"asset_type={asset_type}, code={code}, metric={metric}, "
+            f"requested_date={requested_date}, actual_date={actual_date}, "
+            f"max_age_days={STALE_FALLBACK_MAX_AGE_DAYS}"
+        )
 
 
 def _minimum_start_date(actual_date: date, minimum_lookback_years: int | None) -> str | None:

@@ -1,5 +1,6 @@
 from finance_cli.db import DailyMetric
 from finance_cli.service import MetricQueryResult, MetricsService
+from finance_cli.sources import DataSourceError
 
 
 def fail_fetch():
@@ -488,6 +489,91 @@ def test_query_value_refreshes_stale_local_data(tmp_path):
     assert result.source == "akshare"
 
 
+def test_query_value_uses_fallback_data_when_api_fails_and_data_is_six_days_old(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "000300", "dividend_yield", "2026-05-15", 2.1, "local"),
+        ]
+    )
+
+    def fetch_missing():
+        raise DataSourceError("source failed")
+
+    result = service.query_value(
+        asset_type="index",
+        code="000300",
+        metric="dividend_yield",
+        requested_date="2026-05-21",
+        fetch_missing=fetch_missing,
+    )
+
+    assert result.actual_date == "2026-05-15"
+    assert result.value == 2.1
+    assert result.stale is True
+
+
+def test_query_value_rejects_fallback_data_when_api_fails_and_data_is_seven_days_old(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("index", "000300", "dividend_yield", "2026-05-14", 2.1, "local"),
+        ]
+    )
+
+    def fetch_missing():
+        raise DataSourceError("source failed")
+
+    try:
+        service.query_value(
+            asset_type="index",
+            code="000300",
+            metric="dividend_yield",
+            requested_date="2026-05-21",
+            fetch_missing=fetch_missing,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "Fallback data is too old" in message
+        assert "requested_date=2026-05-21" in message
+        assert "actual_date=2026-05-14" in message
+        assert "max_age_days=7" in message
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_query_rejects_fallback_data_when_api_fails_and_data_is_seven_days_old(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("gold", "AU9999", "close", "2026-05-14", 530.0, "local"),
+        ]
+    )
+
+    def fetch_missing():
+        raise DataSourceError("source failed")
+
+    try:
+        service.query(
+            asset_type="gold",
+            code="AU9999",
+            metric="close",
+            requested_date="2026-05-21",
+            years=1,
+            fetch_missing=fetch_missing,
+        )
+    except ValueError as exc:
+        assert "Fallback data is too old" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
     repo = InMemoryMetricsRepository()
     service = MetricsService(repo)
@@ -626,6 +712,37 @@ def test_query_range_fetches_when_local_data_is_stale_for_end_date(tmp_path):
         ("2026-01-02", 531.0, "akshare"),
         ("2026-04-30", 540.0, "akshare"),
     ]
+
+
+def test_query_range_rejects_fallback_data_when_api_fails_and_end_data_is_seven_days_old(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+    repo.initialize()
+    repo.upsert_metrics(
+        [
+            DailyMetric("gold", "AU9999", "close", "2026-05-14", 530.0, "local"),
+        ]
+    )
+
+    def fetch_missing():
+        raise DataSourceError("source failed")
+
+    try:
+        service.query_range(
+            asset_type="gold",
+            code="AU9999",
+            metric="close",
+            requested_from="2026-05-01",
+            requested_to="2026-05-21",
+            fetch_missing=fetch_missing,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "Fallback data is too old" in message
+        assert "requested_date=2026-05-21" in message
+        assert "actual_date=2026-05-14" in message
+    else:
+        raise AssertionError("Expected ValueError")
 
 
 def test_query_range_raises_when_no_data_exists_after_fetch(tmp_path):
