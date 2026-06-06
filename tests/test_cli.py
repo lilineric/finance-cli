@@ -3,12 +3,43 @@ import json
 from typer.testing import CliRunner
 
 from finance_cli.cli import app
-from finance_cli.db import DailyMetric, SQLiteApiError
+from finance_cli.db import DailyMetric, FundInfo, SQLiteApiError
 from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 from finance_cli.sources import DataSourceError
 
 
 runner = CliRunner()
+
+
+def _fund_info_payload():
+    return {
+        "code": "017763",
+        "name": "银河领先债券C",
+        "fund_type": "债券型",
+        "established_date": "2023-01-01",
+        "asset_size": "10.25亿元",
+        "purchase_status": "开放申购",
+        "redemption_status": "开放赎回",
+        "morningstar_rating": "5",
+        "purchase_fee": [
+            {
+                "min_amount": 0,
+                "max_amount": 1000000,
+                "original_rate": 0.015,
+                "discounted_rate": 0.0015,
+            }
+        ],
+        "redemption_fee": [
+            {
+                "min_holding_days": 0,
+                "max_holding_days": 7,
+                "original_rate": 0.015,
+                "discounted_rate": 0.015,
+            }
+        ],
+        "source": "manual",
+        "updated_at": "2026-06-07T12:00:00+00:00",
+    }
 
 
 def test_cli_help_shows_commands():
@@ -19,6 +50,8 @@ def test_cli_help_shows_commands():
     assert "dividend-yield" in result.output
     assert "pb" in result.output
     assert "fund-nav" in result.output
+    assert "fund-info" in result.output
+    assert "fund-info-update" in result.output
     assert "cn10y-yield" in result.output
     assert "gold" in result.output
     assert "sync" in result.output
@@ -412,6 +445,187 @@ def test_fund_nav_command_supports_accumulated_nav(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert seen["metric"] == "accumulated_nav"
     assert "累计净值: 1.9876" in result.output
+
+
+def test_fund_info_command_outputs_cached_json(monkeypatch):
+    seen = {}
+
+    def query_fund_info(self, code, fetch_missing, refresh=False):
+        seen["code"] = code
+        seen["refresh"] = refresh
+        return FundInfo(**_fund_info_payload())
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_fund_info", query_fund_info)
+
+    result = runner.invoke(app, ["fund-info", "--code", "017763", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"code": "017763", "refresh": False}
+    payload = json.loads(result.output)
+    assert payload["code"] == "017763"
+    assert payload["name"] == "银河领先债券C"
+    assert payload["purchase_fee"][0]["discounted_rate"] == 0.0015
+
+
+def test_fund_info_command_passes_refresh(monkeypatch):
+    seen = {}
+
+    def query_fund_info(self, code, fetch_missing, refresh=False):
+        seen["refresh"] = refresh
+        return FundInfo(**_fund_info_payload())
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_fund_info", query_fund_info)
+
+    result = runner.invoke(app, ["fund-info", "--code", "017763", "--refresh"])
+
+    assert result.exit_code == 0
+    assert seen["refresh"] is True
+    assert "基金名称: 银河领先债券C" in result.output
+
+
+def test_fund_info_update_accepts_inline_json(monkeypatch):
+    seen = {}
+
+    def update_fund_info(self, fund_info):
+        seen["fund_info"] = fund_info
+        return fund_info
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.update_fund_info", update_fund_info)
+
+    result = runner.invoke(
+        app,
+        [
+            "fund-info-update",
+            "--code",
+            "017763",
+            "--data",
+            json.dumps(_fund_info_payload(), ensure_ascii=False),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["fund_info"].code == "017763"
+    assert seen["fund_info"].source == "manual"
+    payload = json.loads(result.output)
+    assert payload["name"] == "银河领先债券C"
+
+
+def test_fund_info_update_accepts_json_file(monkeypatch, tmp_path):
+    seen = {}
+
+    def update_fund_info(self, fund_info):
+        seen["fund_info"] = fund_info
+        return fund_info
+
+    data_file = tmp_path / "fund-info.json"
+    data_file.write_text(json.dumps(_fund_info_payload(), ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr("finance_cli.service.MetricsService.update_fund_info", update_fund_info)
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data-file", str(data_file), "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen["fund_info"].code == "017763"
+
+
+def test_fund_info_update_rejects_data_and_data_file_conflict(tmp_path):
+    data_file = tmp_path / "fund-info.json"
+    data_file.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "fund-info-update",
+            "--code",
+            "017763",
+            "--data",
+            "{}",
+            "--data-file",
+            str(data_file),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "invalid_parameter"
+    assert "--data and --data-file cannot be used together" in payload["error"]["message"]
+
+
+def test_fund_info_update_rejects_unknown_field():
+    payload = _fund_info_payload()
+    payload["unexpected"] = "bad"
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "Unknown fund info fields" in error["message"]
+
+
+def test_fund_info_update_rejects_code_mismatch():
+    payload = _fund_info_payload()
+    payload["code"] = "000001"
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "JSON code must match --code" in error["message"]
+
+
+def test_fund_info_update_rejects_missing_data_inputs():
+    result = runner.invoke(app, ["fund-info-update", "--code", "017763", "--json"])
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "one of --data or --data-file is required" in error["message"]
+
+
+def test_fund_info_update_rejects_invalid_json():
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", "{bad", "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "invalid JSON" in error["message"]
+
+
+def test_fund_info_update_rejects_invalid_fee_tier_shape():
+    payload = _fund_info_payload()
+    payload["purchase_fee"] = [
+        {
+            "min_amount": "zero",
+            "max_amount": 1000000,
+            "original_rate": 0.015,
+            "discounted_rate": 0.0015,
+        }
+    ]
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "purchase_fee min_amount must be a number" in error["message"]
 
 
 def test_fund_nav_help_describes_nav_type_values():

@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from enum import Enum
 import json
+from pathlib import Path
 import sys
 from typing import Annotated
 
@@ -10,8 +11,15 @@ from typer.core import TyperGroup
 
 from finance_cli.analytics import validate_years
 from finance_cli.config import load_config
-from finance_cli.db import MetricsRepository, SQLiteApiError
-from finance_cli.output import format_json, format_range_json, format_range_text, format_text
+from finance_cli.db import FundInfo, MetricsRepository, SQLiteApiError
+from finance_cli.output import (
+    format_fund_info_json,
+    format_fund_info_text,
+    format_json,
+    format_range_json,
+    format_range_text,
+    format_text,
+)
 from finance_cli.service import MetricsService
 from finance_cli.sources import (
     DataSourceError,
@@ -19,6 +27,7 @@ from finance_cli.sources import (
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
     fetch_dividend_yield_spread_rows,
+    fetch_fund_info,
     fetch_gold_rows,
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
@@ -76,6 +85,34 @@ app = typer.Typer(help="Financial data CLI", cls=JsonErrorGroup)
 sync_app = typer.Typer(help="Synchronize local data")
 app.add_typer(sync_app, name="sync")
 SW_INDEX_CATEGORIES = ("市场表征", "一级行业", "二级行业", "风格指数")
+FUND_INFO_FIELDS = {
+    "code",
+    "name",
+    "fund_type",
+    "established_date",
+    "asset_size",
+    "purchase_status",
+    "redemption_status",
+    "morningstar_rating",
+    "purchase_fee",
+    "redemption_fee",
+    "source",
+    "updated_at",
+}
+PURCHASE_FEE_FIELDS = {
+    "min_amount",
+    "max_amount",
+    "original_rate",
+    "discounted_rate",
+    "fixed_fee",
+}
+REDEMPTION_FEE_FIELDS = {
+    "min_holding_days",
+    "max_holding_days",
+    "original_rate",
+    "discounted_rate",
+    "fixed_fee",
+}
 
 
 class FundNavType(str, Enum):
@@ -148,6 +185,124 @@ def _default_query_date(query_date: str | None) -> str:
 
 def _default_years(years: int | None) -> int:
     return 10 if years is None else years
+
+
+def _load_fund_info_payload(data: str | None, data_file: str | None) -> dict[str, object]:
+    if data is not None and data_file is not None:
+        raise JsonClickException(
+            "invalid_parameter",
+            "--data and --data-file cannot be used together",
+            exit_code=2,
+        )
+    if data is None and data_file is None:
+        raise JsonClickException(
+            "invalid_parameter",
+            "one of --data or --data-file is required",
+            exit_code=2,
+        )
+    try:
+        raw = data if data is not None else Path(str(data_file)).read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except OSError as exc:
+        raise JsonClickException("invalid_parameter", f"failed to read --data-file: {exc}", exit_code=2) from exc
+    except json.JSONDecodeError as exc:
+        raise JsonClickException("invalid_parameter", f"invalid JSON: {exc.msg}", exit_code=2) from exc
+    if not isinstance(payload, dict):
+        raise JsonClickException("invalid_parameter", "fund info JSON must be an object", exit_code=2)
+    return payload
+
+
+def _fund_info_from_payload(code: str, payload: dict[str, object]) -> FundInfo:
+    unknown_fields = set(payload) - FUND_INFO_FIELDS
+    if unknown_fields:
+        names = ", ".join(sorted(unknown_fields))
+        raise JsonClickException("invalid_parameter", f"Unknown fund info fields: {names}", exit_code=2)
+    payload_code = payload.get("code")
+    if payload_code is not None and str(payload_code) != code:
+        raise JsonClickException("invalid_parameter", "JSON code must match --code", exit_code=2)
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise JsonClickException("invalid_parameter", "name is required", exit_code=2)
+    source = payload.get("source", "manual")
+    if not isinstance(source, str) or not source.strip():
+        raise JsonClickException("invalid_parameter", "source must be a non-empty string", exit_code=2)
+    updated_at = payload.get("updated_at") or datetime.now(UTC).isoformat()
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        raise JsonClickException("invalid_parameter", "updated_at must be a string", exit_code=2)
+    purchase_fee = _validate_fee_list(payload.get("purchase_fee", []), PURCHASE_FEE_FIELDS, "purchase_fee")
+    redemption_fee = _validate_fee_list(payload.get("redemption_fee", []), REDEMPTION_FEE_FIELDS, "redemption_fee")
+    return FundInfo(
+        code=code,
+        name=name.strip(),
+        fund_type=_optional_payload_str(payload.get("fund_type")),
+        established_date=_optional_payload_str(payload.get("established_date")),
+        asset_size=_optional_payload_str(payload.get("asset_size")),
+        purchase_status=_optional_payload_str(payload.get("purchase_status")),
+        redemption_status=_optional_payload_str(payload.get("redemption_status")),
+        morningstar_rating=_optional_payload_str(payload.get("morningstar_rating")),
+        purchase_fee=purchase_fee,
+        redemption_fee=redemption_fee,
+        source=source.strip(),
+        updated_at=updated_at.strip(),
+    )
+
+
+def _validate_fee_list(value: object, allowed_fields: set[str], field_name: str) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise JsonClickException("invalid_parameter", f"{field_name} must be a list", exit_code=2)
+    result = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise JsonClickException("invalid_parameter", f"{field_name} items must be objects", exit_code=2)
+        unknown_fields = set(item) - allowed_fields
+        if unknown_fields:
+            names = ", ".join(sorted(unknown_fields))
+            raise JsonClickException("invalid_parameter", f"Unknown {field_name} fields: {names}", exit_code=2)
+        tier = dict(item)
+        if field_name == "purchase_fee":
+            _validate_purchase_fee_tier(tier)
+        else:
+            _validate_redemption_fee_tier(tier)
+        result.append(tier)
+    return result
+
+
+def _validate_purchase_fee_tier(tier: dict[str, object]) -> None:
+    _require_number(tier, "min_amount", "purchase_fee")
+    _require_optional_number(tier, "max_amount", "purchase_fee")
+    _require_optional_number(tier, "original_rate", "purchase_fee")
+    _require_optional_number(tier, "discounted_rate", "purchase_fee")
+    if "fixed_fee" in tier:
+        _require_optional_number(tier, "fixed_fee", "purchase_fee")
+
+
+def _validate_redemption_fee_tier(tier: dict[str, object]) -> None:
+    _require_number(tier, "min_holding_days", "redemption_fee")
+    _require_optional_number(tier, "max_holding_days", "redemption_fee")
+    _require_optional_number(tier, "original_rate", "redemption_fee")
+    _require_optional_number(tier, "discounted_rate", "redemption_fee")
+    if "fixed_fee" in tier:
+        _require_optional_number(tier, "fixed_fee", "redemption_fee")
+
+
+def _require_number(tier: dict[str, object], field: str, fee_name: str) -> None:
+    value = tier.get(field)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise JsonClickException("invalid_parameter", f"{fee_name} {field} must be a number", exit_code=2)
+
+
+def _require_optional_number(tier: dict[str, object], field: str, fee_name: str) -> None:
+    value = tier.get(field)
+    if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+        raise JsonClickException("invalid_parameter", f"{fee_name} {field} must be a number or null", exit_code=2)
+
+
+def _optional_payload_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise JsonClickException("invalid_parameter", "optional fund info fields must be strings or null", exit_code=2)
+    return value
 
 
 @app.command()
@@ -234,6 +389,51 @@ def dividend_yield(
         raise _value_click_exception(exc) from exc
 
     typer.echo(format_json(result) if json_output else format_text(result))
+
+
+@app.command("fund-info")
+def fund_info(
+    code: str = typer.Option(..., "--code"),
+    refresh: bool = typer.Option(False, "--refresh"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query fund profile, fees, purchase status, and rating."""
+    try:
+        normalized_code = normalize_fund_code(code)
+        result = _service().query_fund_info(
+            normalized_code,
+            lambda: fetch_fund_info(normalized_code),
+            refresh=refresh,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_fund_info_json(result) if json_output else format_fund_info_text(result))
+
+
+@app.command("fund-info-update")
+def fund_info_update(
+    code: str = typer.Option(..., "--code"),
+    data: str | None = typer.Option(None, "--data"),
+    data_file: str | None = typer.Option(None, "--data-file"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Manually update fund profile data from JSON."""
+    try:
+        normalized_code = normalize_fund_code(code)
+        payload = _load_fund_info_payload(data, data_file)
+        fund_info = _fund_info_from_payload(normalized_code, payload)
+        result = _service().update_fund_info(fund_info)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except JsonClickException:
+        raise
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_fund_info_json(result) if json_output else format_fund_info_text(result))
 
 
 @app.command("fund-nav")
