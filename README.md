@@ -53,6 +53,60 @@ Fund NAV uses Eastmoney/Tiantian Fund historical NAV data via akshare.
 `--nav-type` supports `unit` and `accumulated`; it defaults to `unit`.
 It returns the current value only; it does not calculate a historical percentile.
 
+Query fund profile data, fees, purchase status, and Morningstar rating:
+
+```bash
+finance fund-info --code 017763
+finance fund-info --code 017763 --refresh --json
+```
+
+`fund-info` does not fetch fund NAV. By default it reads the remote SQLite database first.
+If no cached row exists, it fetches fund profile data from akshare, stores it in `fund_info`,
+and returns the saved row. `--refresh` forces a fresh akshare fetch and overwrites the
+stored row.
+
+Manually update fund profile data:
+
+```bash
+finance fund-info-update --code 017763 --data '{"name":"银河领先债券C","purchase_fee":[],"redemption_fee":[],"source":"manual"}'
+finance fund-info-update --code 017763 --data-file ./fund-info.json
+```
+
+Manual update JSON uses the same shape as `finance fund-info --json`.
+`purchase_fee` is an array of purchase amount tiers. Amounts are in yuan, and rates use
+decimal values where `0.015` means `1.5%`.
+
+```json
+{
+  "code": "017763",
+  "name": "银河领先债券C",
+  "fund_type": "债券型",
+  "established_date": "2023-01-01",
+  "asset_size": "10.25亿元",
+  "purchase_status": "开放申购",
+  "redemption_status": "开放赎回",
+  "morningstar_rating": "5",
+  "purchase_fee": [
+    {
+      "min_amount": 0,
+      "max_amount": 1000000,
+      "original_rate": 0.015,
+      "discounted_rate": 0.0015
+    }
+  ],
+  "redemption_fee": [
+    {
+      "min_holding_days": 0,
+      "max_holding_days": 7,
+      "original_rate": 0.015,
+      "discounted_rate": 0.015
+    }
+  ],
+  "source": "manual",
+  "updated_at": "2026-06-07T12:00:00+00:00"
+}
+```
+
 Query Shanghai Gold Exchange Au9999 close-price percentile:
 
 ```bash
@@ -98,6 +152,7 @@ Output JSON:
 
 ```bash
 finance pe --code 000300 --date 2026-04-20 --json
+finance fund-info --code 017763 --json
 ```
 
 Query date ranges:
