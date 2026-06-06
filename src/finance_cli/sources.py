@@ -281,6 +281,65 @@ def fetch_cn10y_yield_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -
     return normalize_cn10y_yield_rows(frame)
 
 
+def fetch_fund_info(
+    code: str,
+    basic_fetcher: Callable[..., pd.DataFrame] | None = None,
+    purchase_fetcher: Callable[..., pd.DataFrame] | None = None,
+    fee_fetcher: Callable[..., pd.DataFrame] | None = None,
+    rating_fetcher: Callable[..., pd.DataFrame] | None = None,
+    clock: Callable[[], str] | None = None,
+) -> FundInfo:
+    normalized_code = normalize_fund_code(code)
+    if basic_fetcher is None or purchase_fetcher is None or fee_fetcher is None or rating_fetcher is None:
+        try:
+            import akshare as ak
+        except Exception as exc:  # pragma: no cover - depends on optional runtime environment
+            raise DataSourceError(f"Failed to import akshare: {exc}") from exc
+        basic_fetcher = basic_fetcher or ak.fund_individual_basic_info_xq
+        purchase_fetcher = purchase_fetcher or ak.fund_purchase_em
+        fee_fetcher = fee_fetcher or ak.fund_fee_em
+        rating_fetcher = rating_fetcher or ak.fund_rating_all
+
+    now = clock or (lambda: datetime.now(timezone.utc).isoformat())
+    try:
+        try:
+            basic_frame = basic_fetcher(symbol=normalized_code)
+        except TypeError:
+            basic_frame = basic_fetcher(normalized_code)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch fund basic info for {normalized_code}: {exc}") from exc
+
+    try:
+        purchase_status_frame = purchase_fetcher()
+    except Exception:
+        purchase_status_frame = pd.DataFrame()
+
+    try:
+        purchase_fee_frame = fee_fetcher(symbol=normalized_code, indicator="申购费率（前端）")
+    except Exception:
+        purchase_fee_frame = pd.DataFrame()
+
+    try:
+        redemption_fee_frame = fee_fetcher(symbol=normalized_code, indicator="赎回费率")
+    except Exception:
+        redemption_fee_frame = pd.DataFrame()
+
+    try:
+        rating_frame = rating_fetcher()
+    except Exception:
+        rating_frame = pd.DataFrame()
+
+    return normalize_fund_info(
+        normalized_code,
+        basic_frame,
+        purchase_status_frame,
+        purchase_fee_frame,
+        redemption_fee_frame,
+        rating_frame,
+        updated_at=now(),
+    )
+
+
 def fetch_fund_nav_rows(
     code: str,
     nav_type: str = "unit",

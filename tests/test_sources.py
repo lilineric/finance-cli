@@ -16,6 +16,7 @@ from finance_cli.sources import (
     fetch_index_dividend_yield_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
+    fetch_fund_info,
     fetch_fund_nav_rows,
     fetch_m2_rows,
     normalize_index_pe_code,
@@ -274,6 +275,72 @@ def test_normalize_fund_info_combines_profile_status_fees_and_rating():
     assert result.redemption_fee[0]["original_rate"] == 0.015
     assert result.source == "akshare"
     assert result.updated_at == "2026-06-07T12:00:00+00:00"
+
+
+def test_fetch_fund_info_aggregates_akshare_frames():
+    calls = []
+
+    def basic_fetcher(symbol):
+        calls.append(("basic", symbol))
+        return pd.DataFrame(
+            {
+                "item": ["基金名称", "基金类型", "成立日期", "资产规模"],
+                "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元"],
+            }
+        )
+
+    def purchase_fetcher():
+        calls.append(("purchase_status", None))
+        return pd.DataFrame(
+            {
+                "基金代码": ["017763"],
+                "申购状态": ["开放申购"],
+                "赎回状态": ["开放赎回"],
+            }
+        )
+
+    def fee_fetcher(symbol, indicator):
+        calls.append(("fee", symbol, indicator))
+        if indicator == "申购费率（前端）":
+            return pd.DataFrame(
+                {
+                    "适用金额": ["小于100万元"],
+                    "原费率": ["1.50%"],
+                    "天天基金优惠费率": ["0.15%"],
+                }
+            )
+        return pd.DataFrame(
+            {
+                "持有期限": ["小于7天"],
+                "赎回费率": ["1.50%"],
+            }
+        )
+
+    def rating_fetcher():
+        calls.append(("rating", None))
+        return pd.DataFrame({"代码": ["017763"], "晨星评级": ["5"]})
+
+    result = fetch_fund_info(
+        "017763",
+        basic_fetcher=basic_fetcher,
+        purchase_fetcher=purchase_fetcher,
+        fee_fetcher=fee_fetcher,
+        rating_fetcher=rating_fetcher,
+        clock=lambda: "2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.name == "银河领先债券C"
+    assert result.purchase_status == "开放申购"
+    assert result.morningstar_rating == "5"
+    assert result.purchase_fee[0]["max_amount"] == 1000000
+    assert result.redemption_fee[0]["max_holding_days"] == 7
+    assert calls == [
+        ("basic", "017763"),
+        ("purchase_status", None),
+        ("fee", "017763", "申购费率（前端）"),
+        ("fee", "017763", "赎回费率"),
+        ("rating", None),
+    ]
 
 
 @pytest.mark.parametrize("date_value", [None, pd.NA, "", float("nan")])
