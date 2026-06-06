@@ -8,7 +8,7 @@ from finance_cli.analytics import (
     start_date_for_years,
     validate_years,
 )
-from finance_cli.db import DailyMetric, MetricsRepository
+from finance_cli.db import DailyMetric, FundInfo, MetricsRepository
 from finance_cli.sources import DataSourceError
 
 
@@ -68,6 +68,35 @@ class MetricsService:
         rows = list(fetch_rows())
         self.repository.delete_metrics(asset_type, code, metric)
         return self.repository.upsert_metrics(rows)
+
+    def query_fund_info(
+        self,
+        code: str,
+        fetch_missing: Callable[[], FundInfo],
+        refresh: bool = False,
+    ) -> FundInfo:
+        self.repository.initialize()
+        cached = None if refresh else self.repository.fund_info_by_code(code)
+        if cached is not None:
+            return cached
+
+        try:
+            fresh = fetch_missing()
+        except DataSourceError:
+            if refresh:
+                raise
+            fallback = self.repository.fund_info_by_code(code)
+            if fallback is None:
+                raise
+            return fallback
+
+        self.repository.upsert_fund_info(fresh)
+        return fresh
+
+    def update_fund_info(self, fund_info: FundInfo) -> FundInfo:
+        self.repository.initialize()
+        self.repository.upsert_fund_info(fund_info)
+        return fund_info
 
     def query(
         self,

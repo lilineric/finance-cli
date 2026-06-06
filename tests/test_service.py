@@ -1,4 +1,6 @@
-from finance_cli.db import DailyMetric
+import pytest
+
+from finance_cli.db import DailyMetric, FundInfo
 from finance_cli.service import MetricQueryResult, MetricsService
 from finance_cli.sources import DataSourceError
 
@@ -53,6 +55,127 @@ class InMemoryMetricsRepository:
             ],
             key=lambda row: row.date,
         )
+
+
+class FakeFundInfoRepository:
+    def __init__(self, existing=None):
+        self.existing = existing
+        self.initialize_calls = 0
+        self.query_calls = []
+        self.upserts = []
+
+    def initialize(self):
+        self.initialize_calls += 1
+
+    def fund_info_by_code(self, code):
+        self.query_calls.append(code)
+        return self.existing
+
+    def upsert_fund_info(self, fund_info):
+        self.existing = fund_info
+        self.upserts.append(fund_info)
+        return 1
+
+
+def _fund_info(source="akshare", updated_at="2026-06-07T12:00:00+00:00"):
+    return FundInfo(
+        code="017763",
+        name="银河领先债券C",
+        fund_type="债券型",
+        established_date="2023-01-01",
+        asset_size="10.25亿元",
+        purchase_status="开放申购",
+        redemption_status="开放赎回",
+        morningstar_rating="5",
+        purchase_fee=[],
+        redemption_fee=[],
+        source=source,
+        updated_at=updated_at,
+    )
+
+
+def test_query_fund_info_returns_cached_data_without_fetching():
+    cached = _fund_info(source="manual")
+    repo = FakeFundInfoRepository(existing=cached)
+    service = MetricsService(repo)
+    called = False
+
+    def fetch_missing():
+        nonlocal called
+        called = True
+        return _fund_info()
+
+    result = service.query_fund_info("017763", fetch_missing)
+
+    assert result == cached
+    assert called is False
+    assert repo.initialize_calls == 1
+    assert repo.upserts == []
+
+
+def test_query_fund_info_fetches_and_upserts_when_cache_missing():
+    repo = FakeFundInfoRepository(existing=None)
+    service = MetricsService(repo)
+    fresh = _fund_info()
+
+    result = service.query_fund_info("017763", lambda: fresh)
+
+    assert result == fresh
+    assert repo.upserts == [fresh]
+
+
+def test_query_fund_info_refresh_fetches_even_when_cache_exists():
+    cached = _fund_info(source="manual")
+    fresh = _fund_info(source="akshare", updated_at="2026-06-07T13:00:00+00:00")
+    repo = FakeFundInfoRepository(existing=cached)
+    service = MetricsService(repo)
+
+    result = service.query_fund_info("017763", lambda: fresh, refresh=True)
+
+    assert result == fresh
+    assert repo.upserts == [fresh]
+
+
+def test_query_fund_info_returns_cached_data_when_default_fetch_fails():
+    cached = _fund_info(source="manual")
+    repo = FakeFundInfoRepository(existing=cached)
+    repo.existing = None
+    service = MetricsService(repo)
+
+    def fetch_missing():
+        repo.existing = cached
+        raise DataSourceError("akshare unavailable")
+
+    result = service.query_fund_info("017763", fetch_missing)
+
+    assert result == cached
+    assert repo.upserts == []
+
+
+def test_query_fund_info_refresh_fetch_failure_does_not_return_cached_data():
+    cached = _fund_info(source="manual")
+    repo = FakeFundInfoRepository(existing=cached)
+    service = MetricsService(repo)
+
+    def fetch_missing():
+        raise DataSourceError("akshare unavailable")
+
+    with pytest.raises(DataSourceError, match="akshare unavailable"):
+        service.query_fund_info("017763", fetch_missing, refresh=True)
+
+    assert repo.upserts == []
+
+
+def test_update_fund_info_initializes_and_upserts():
+    fund_info = _fund_info(source="manual")
+    repo = FakeFundInfoRepository()
+    service = MetricsService(repo)
+
+    result = service.update_fund_info(fund_info)
+
+    assert result == fund_info
+    assert repo.initialize_calls == 1
+    assert repo.upserts == [fund_info]
 
 
 def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tmp_path):
