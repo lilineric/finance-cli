@@ -23,8 +23,11 @@ from finance_cli.sources import (
     fetch_sw_index_pb_rows,
     normalize_danjuan_index_pe_rows,
     normalize_csindex_code,
+    normalize_fund_info,
     normalize_fund_nav_rows,
+    normalize_purchase_fee_rows,
     normalize_index_pb_rows_from_etf_run,
+    normalize_redemption_fee_rows,
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
     normalize_index_dividend_yield_rows,
@@ -146,6 +149,131 @@ def test_normalize_fund_nav_rows_accepts_accumulated_nav_columns():
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("fund", "017763", "accumulated_nav", "2026-05-22", 1.9876, "akshare"),
     ]
+
+
+def test_normalize_purchase_fee_rows_parses_amount_tiers_and_discount_rates():
+    frame = pd.DataFrame(
+        {
+            "适用金额": ["小于100万元", "大于等于100万元"],
+            "原费率": ["1.50%", "1000元/笔"],
+            "天天基金优惠费率": ["0.15%", "1000元/笔"],
+        }
+    )
+
+    tiers = normalize_purchase_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_amount": 0,
+            "max_amount": 1000000,
+            "original_rate": 0.015,
+            "discounted_rate": 0.0015,
+        },
+        {
+            "min_amount": 1000000,
+            "max_amount": None,
+            "original_rate": None,
+            "discounted_rate": None,
+            "fixed_fee": 1000,
+        },
+    ]
+
+
+def test_normalize_redemption_fee_rows_parses_holding_period_tiers():
+    frame = pd.DataFrame(
+        {
+            "持有期限": ["小于7天", "大于等于730天"],
+            "赎回费率": ["1.50%", "0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": 7,
+            "original_rate": 0.015,
+            "discounted_rate": 0.015,
+        },
+        {
+            "min_holding_days": 730,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        },
+    ]
+
+
+def test_normalize_purchase_fee_rows_rejects_unparseable_tier():
+    frame = pd.DataFrame(
+        {
+            "适用金额": ["详见基金公告"],
+            "原费率": ["1.50%"],
+            "天天基金优惠费率": ["0.15%"],
+        }
+    )
+
+    with pytest.raises(DataSourceError, match="Failed to parse purchase fee tier"):
+        normalize_purchase_fee_rows(frame)
+
+
+def test_normalize_fund_info_combines_profile_status_fees_and_rating():
+    basic_frame = pd.DataFrame(
+        {
+            "item": ["基金名称", "基金类型", "成立日期", "资产规模"],
+            "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元"],
+        }
+    )
+    purchase_status_frame = pd.DataFrame(
+        {
+            "基金代码": ["017763"],
+            "申购状态": ["开放申购"],
+            "赎回状态": ["开放赎回"],
+        }
+    )
+    purchase_fee_frame = pd.DataFrame(
+        {
+            "适用金额": ["小于100万元"],
+            "原费率": ["1.50%"],
+            "天天基金优惠费率": ["0.15%"],
+        }
+    )
+    redemption_fee_frame = pd.DataFrame(
+        {
+            "持有期限": ["小于7天"],
+            "赎回费率": ["1.50%"],
+        }
+    )
+    rating_frame = pd.DataFrame(
+        {
+            "代码": ["017763"],
+            "晨星评级": ["5"],
+        }
+    )
+
+    result = normalize_fund_info(
+        "017763",
+        basic_frame,
+        purchase_status_frame,
+        purchase_fee_frame,
+        redemption_fee_frame,
+        rating_frame,
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.code == "017763"
+    assert result.name == "银河领先债券C"
+    assert result.fund_type == "债券型"
+    assert result.established_date == "2023-01-01"
+    assert result.asset_size == "10.25亿元"
+    assert result.purchase_status == "开放申购"
+    assert result.redemption_status == "开放赎回"
+    assert result.morningstar_rating == "5"
+    assert result.purchase_fee[0]["discounted_rate"] == 0.0015
+    assert result.redemption_fee[0]["original_rate"] == 0.015
+    assert result.source == "akshare"
+    assert result.updated_at == "2026-06-07T12:00:00+00:00"
 
 
 @pytest.mark.parametrize("date_value", [None, pd.NA, "", float("nan")])

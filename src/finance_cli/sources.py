@@ -11,7 +11,7 @@ import brotli
 import pandas as pd
 
 from finance_cli.analytics import parse_query_date
-from finance_cli.db import DailyMetric
+from finance_cli.db import DailyMetric, FundInfo
 
 
 INDEX_PE_DATE_COLUMNS = ("日期", "日期Date", "date", "trade_date")
@@ -54,6 +54,21 @@ FUND_NAV_TYPES = {
     "unit": ("unit_nav", "单位净值走势"),
     "accumulated": ("accumulated_nav", "累计净值走势"),
 }
+FUND_BASIC_KEY_COLUMNS = ("item", "项目", "字段", "名称")
+FUND_BASIC_VALUE_COLUMNS = ("value", "内容", "值")
+FUND_CODE_COLUMNS = ("基金代码", "代码", "fund_code", "code")
+FUND_NAME_KEYS = ("基金名称", "name")
+FUND_TYPE_KEYS = ("基金类型", "类型", "fund_type")
+FUND_ESTABLISHED_DATE_KEYS = ("成立日期", "established_date")
+FUND_ASSET_SIZE_KEYS = ("资产规模", "asset_size")
+FUND_PURCHASE_STATUS_COLUMNS = ("申购状态", "purchase_status")
+FUND_REDEMPTION_STATUS_COLUMNS = ("赎回状态", "redemption_status")
+FUND_RATING_COLUMNS = ("晨星评级", "晨星评级(三年)", "morningstar_rating")
+PURCHASE_AMOUNT_COLUMNS = ("适用金额", "金额", "amount_range")
+PURCHASE_ORIGINAL_RATE_COLUMNS = ("原费率", "费率", "original_rate")
+PURCHASE_DISCOUNTED_RATE_COLUMNS = ("天天基金优惠费率", "优惠费率", "discounted_rate")
+REDEMPTION_HOLDING_COLUMNS = ("持有期限", "持有时间", "holding_period")
+REDEMPTION_RATE_COLUMNS = ("赎回费率", "费率", "redemption_rate")
 FED_H6_MONTHLY_URL = (
     "https://www.federalreserve.gov/datadownload/Output.aspx"
     "?rel=H6&series=798e2796917702a5f8423426ba7e6b42"
@@ -564,6 +579,187 @@ def normalize_fund_nav_rows(code: str, metric: str, frame: pd.DataFrame) -> list
     if not rows:
         raise DataSourceError(f"No fund NAV data found for {code}")
     return rows
+
+
+def normalize_purchase_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    amount_column = _first_existing_column(frame, PURCHASE_AMOUNT_COLUMNS)
+    original_rate_column = _first_existing_column(frame, PURCHASE_ORIGINAL_RATE_COLUMNS)
+    discounted_rate_column = _first_existing_column(frame, PURCHASE_DISCOUNTED_RATE_COLUMNS)
+    tiers = []
+    for _, row in frame.iterrows():
+        amount_text = str(row[amount_column]).strip()
+        original_text = str(row[original_rate_column]).strip()
+        discounted_text = str(row[discounted_rate_column]).strip()
+        try:
+            tier = _parse_amount_range(amount_text)
+            fee_value = _parse_purchase_fee_value(original_text, discounted_text)
+        except DataSourceError as exc:
+            raise DataSourceError(f"Failed to parse purchase fee tier: {amount_text}") from exc
+        tiers.append({**tier, **fee_value})
+    return sorted(tiers, key=lambda item: float(item["min_amount"]))
+
+
+def normalize_redemption_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    holding_column = _first_existing_column(frame, REDEMPTION_HOLDING_COLUMNS)
+    rate_column = _first_existing_column(frame, REDEMPTION_RATE_COLUMNS)
+    tiers = []
+    for _, row in frame.iterrows():
+        holding_text = str(row[holding_column]).strip()
+        rate_text = str(row[rate_column]).strip()
+        try:
+            tier = _parse_holding_period_range(holding_text)
+            rate = _parse_rate(rate_text)
+        except DataSourceError as exc:
+            raise DataSourceError(f"Failed to parse redemption fee tier: {holding_text}") from exc
+        tiers.append(
+            {
+                **tier,
+                "original_rate": rate,
+                "discounted_rate": rate,
+            }
+        )
+    return sorted(tiers, key=lambda item: int(item["min_holding_days"]))
+
+
+def normalize_fund_info(
+    code: str,
+    basic_frame: pd.DataFrame,
+    purchase_status_frame: pd.DataFrame,
+    purchase_fee_frame: pd.DataFrame,
+    redemption_fee_frame: pd.DataFrame,
+    rating_frame: pd.DataFrame,
+    updated_at: str,
+) -> FundInfo:
+    normalized_code = normalize_fund_code(code)
+    basic = _fund_basic_mapping(basic_frame)
+    name = _first_mapping_value(basic, FUND_NAME_KEYS)
+    if name is None:
+        raise DataSourceError(f"No fund name found for {normalized_code}")
+    status_row = _row_for_code(purchase_status_frame, normalized_code)
+    rating_row = _row_for_code(rating_frame, normalized_code)
+    return FundInfo(
+        code=normalized_code,
+        name=name,
+        fund_type=_first_mapping_value(basic, FUND_TYPE_KEYS),
+        established_date=_first_mapping_value(basic, FUND_ESTABLISHED_DATE_KEYS),
+        asset_size=_first_mapping_value(basic, FUND_ASSET_SIZE_KEYS),
+        purchase_status=_first_row_value(status_row, FUND_PURCHASE_STATUS_COLUMNS),
+        redemption_status=_first_row_value(status_row, FUND_REDEMPTION_STATUS_COLUMNS),
+        morningstar_rating=_first_row_value(rating_row, FUND_RATING_COLUMNS),
+        purchase_fee=normalize_purchase_fee_rows(purchase_fee_frame),
+        redemption_fee=normalize_redemption_fee_rows(redemption_fee_frame),
+        source="akshare",
+        updated_at=updated_at,
+    )
+
+
+def _fund_basic_mapping(frame: pd.DataFrame) -> dict[str, str]:
+    if frame.empty:
+        return {}
+    key_column = _first_existing_column(frame, FUND_BASIC_KEY_COLUMNS)
+    value_column = _first_existing_column(frame, FUND_BASIC_VALUE_COLUMNS)
+    return {
+        str(row[key_column]).strip(): str(row[value_column]).strip()
+        for _, row in frame.iterrows()
+        if not _is_missing(row[value_column])
+    }
+
+
+def _first_mapping_value(mapping: dict[str, str], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        if key in mapping and mapping[key]:
+            return mapping[key]
+    return None
+
+
+def _row_for_code(frame: pd.DataFrame, code: str) -> pd.Series | None:
+    if frame.empty:
+        return None
+    code_column = _first_existing_column(frame, FUND_CODE_COLUMNS)
+    matched = frame[frame[code_column].astype(str).str.zfill(6) == code]
+    if matched.empty:
+        return None
+    return matched.iloc[0]
+
+
+def _first_row_value(row: pd.Series | None, columns: tuple[str, ...]) -> str | None:
+    if row is None:
+        return None
+    for column in columns:
+        if column in row.index and not _is_missing(row[column]):
+            return str(row[column]).strip()
+    return None
+
+
+def _parse_amount_range(text: str) -> dict[str, int | None]:
+    normalized = text.replace(",", "").replace("，", "").replace(" ", "")
+    if match := re.fullmatch(r"(?:小于|少于|低于)(\d+(?:\.\d+)?)(万)?元?", normalized):
+        return {"min_amount": 0, "max_amount": _amount_to_yuan(match.group(1), match.group(2))}
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+(?:\.\d+)?)(万)?元?", normalized):
+        return {"min_amount": _amount_to_yuan(match.group(1), match.group(2)), "max_amount": None}
+    if match := re.fullmatch(
+        r"(\d+(?:\.\d+)?)(万)?元?(?:<=|≤)(?:申购金额|金额)<(\d+(?:\.\d+)?)(万)?元?",
+        normalized,
+    ):
+        return {
+            "min_amount": _amount_to_yuan(match.group(1), match.group(2)),
+            "max_amount": _amount_to_yuan(match.group(3), match.group(4)),
+        }
+    raise DataSourceError(f"Unparseable amount range: {text}")
+
+
+def _parse_holding_period_range(text: str) -> dict[str, int | None]:
+    normalized = text.replace(" ", "")
+    if match := re.fullmatch(r"(?:小于|少于|低于)(\d+)天", normalized):
+        return {"min_holding_days": 0, "max_holding_days": int(match.group(1))}
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天", normalized):
+        return {"min_holding_days": int(match.group(1)), "max_holding_days": None}
+    if match := re.fullmatch(r"(\d+)天(?:<=|≤)(?:持有期限|持有时间)<(\d+)天", normalized):
+        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2))}
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)年", normalized):
+        return {"min_holding_days": int(match.group(1)) * 365, "max_holding_days": None}
+    raise DataSourceError(f"Unparseable holding period: {text}")
+
+
+def _parse_purchase_fee_value(original_text: str, discounted_text: str) -> dict[str, float | int | None]:
+    fixed_fee = _parse_fixed_fee(original_text)
+    if fixed_fee is not None:
+        return {
+            "original_rate": None,
+            "discounted_rate": None,
+            "fixed_fee": fixed_fee,
+        }
+    return {
+        "original_rate": _parse_rate(original_text),
+        "discounted_rate": _parse_rate(discounted_text),
+    }
+
+
+def _parse_rate(text: str) -> float:
+    normalized = text.strip()
+    if normalized in {"0", "0.00%", "免费"}:
+        return 0
+    if match := re.fullmatch(r"(\d+(?:\.\d+)?)%", normalized):
+        return float(match.group(1)) / 100
+    raise DataSourceError(f"Unparseable rate: {text}")
+
+
+def _parse_fixed_fee(text: str) -> int | None:
+    normalized = text.strip()
+    if match := re.fullmatch(r"(\d+)元(?:/笔)?", normalized):
+        return int(match.group(1))
+    return None
+
+
+def _amount_to_yuan(number_text: str, unit: str | None) -> int:
+    value = float(number_text)
+    if unit == "万":
+        value *= 10000
+    return int(value)
 
 
 def _fund_nav_type_settings(nav_type: str) -> tuple[str, str]:
