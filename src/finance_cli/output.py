@@ -1,5 +1,7 @@
 import json
 
+from finance_cli.db import FundInfo
+
 from .service import MetricQueryResult, MetricRangeQueryResult
 
 
@@ -65,6 +67,46 @@ def format_range_text(result: MetricRangeQueryResult) -> str:
     return "\n".join(lines)
 
 
+def format_fund_info_json(result: FundInfo) -> str:
+    return json.dumps(
+        {
+            "code": result.code,
+            "name": result.name,
+            "fund_type": result.fund_type,
+            "established_date": result.established_date,
+            "asset_size": result.asset_size,
+            "purchase_status": result.purchase_status,
+            "redemption_status": result.redemption_status,
+            "morningstar_rating": result.morningstar_rating,
+            "purchase_fee": result.purchase_fee,
+            "redemption_fee": result.redemption_fee,
+            "source": result.source,
+            "updated_at": result.updated_at,
+        },
+        ensure_ascii=False,
+    )
+
+
+def format_fund_info_text(result: FundInfo) -> str:
+    lines = [
+        f"基金: {result.code}",
+        f"基金名称: {result.name}",
+        f"基金类型: {_display_value(result.fund_type)}",
+        f"成立日期: {_display_value(result.established_date)}",
+        f"资产规模: {_display_value(result.asset_size)}",
+        f"申购状态: {_display_value(result.purchase_status)}",
+        f"赎回状态: {_display_value(result.redemption_status)}",
+        f"晨星评级: {_display_value(result.morningstar_rating)}",
+        f"数据源: {result.source}",
+        f"更新时间: {result.updated_at}",
+        "申购费率:",
+    ]
+    lines.extend(_purchase_fee_lines(result.purchase_fee))
+    lines.append("赎回费率:")
+    lines.extend(_redemption_fee_lines(result.redemption_fee))
+    return "\n".join(lines)
+
+
 def format_text(result: MetricQueryResult) -> str:
     label = _asset_label(result.asset_type)
     value_label = _metric_label(result.metric)
@@ -89,6 +131,59 @@ def format_text(result: MetricQueryResult) -> str:
     if result.stale:
         lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
     return "\n".join(lines)
+
+
+def _display_value(value: object) -> str:
+    return "未知" if value is None else str(value)
+
+
+def _purchase_fee_lines(fee_tiers: list[dict[str, object]]) -> list[str]:
+    if not fee_tiers:
+        return ["无"]
+    return [_format_purchase_fee_tier(tier) for tier in fee_tiers]
+
+
+def _redemption_fee_lines(fee_tiers: list[dict[str, object]]) -> list[str]:
+    if not fee_tiers:
+        return ["无"]
+    return [_format_redemption_fee_tier(tier) for tier in fee_tiers]
+
+
+def _format_purchase_fee_tier(tier: dict[str, object]) -> str:
+    min_amount = tier["min_amount"]
+    max_amount = tier.get("max_amount")
+    if max_amount is None:
+        range_text = f"amount >= {min_amount}"
+    else:
+        range_text = f"{min_amount} <= amount < {max_amount}"
+    return f"{range_text}: {_format_fee_value(tier)}"
+
+
+def _format_redemption_fee_tier(tier: dict[str, object]) -> str:
+    min_days = tier["min_holding_days"]
+    max_days = tier.get("max_holding_days")
+    if max_days is None:
+        range_text = f"days >= {min_days}"
+    else:
+        range_text = f"{min_days} <= days < {max_days}"
+    return f"{range_text}: {_format_fee_value(tier)}"
+
+
+def _format_fee_value(tier: dict[str, object]) -> str:
+    fixed_fee = tier.get("fixed_fee")
+    if fixed_fee is not None:
+        return f"固定费用 {fixed_fee}元"
+    return (
+        f"原费率 {_format_rate(tier.get('original_rate'))}, "
+        f"折扣后费率 {_format_rate(tier.get('discounted_rate'))}"
+    )
+
+
+def _format_rate(value: object) -> str:
+    if value is None:
+        return "未知"
+    percentage = float(value) * 100
+    return f"{percentage:g}%"
 
 
 def _asset_label(asset_type: str) -> str:

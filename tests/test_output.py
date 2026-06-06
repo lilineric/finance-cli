@@ -1,6 +1,14 @@
 import json
 
-from finance_cli.output import format_json, format_range_json, format_range_text, format_text
+from finance_cli.db import FundInfo
+from finance_cli.output import (
+    format_fund_info_json,
+    format_fund_info_text,
+    format_json,
+    format_range_json,
+    format_range_text,
+    format_text,
+)
 from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 
 
@@ -109,6 +117,94 @@ def test_format_text_includes_fund_nav_labels():
     assert "基金: 017763" in format_text(unit)
     assert "单位净值: 1.2456" in format_text(unit)
     assert "累计净值: 1.9876" in format_text(accumulated)
+
+
+def test_format_fund_info_json_outputs_expected_payload():
+    fund_info = FundInfo(
+        code="017763",
+        name="银河领先债券C",
+        fund_type="债券型",
+        established_date="2023-01-01",
+        asset_size="10.25亿元",
+        purchase_status="开放申购",
+        redemption_status="开放赎回",
+        morningstar_rating="5",
+        purchase_fee=[
+            {
+                "min_amount": 0,
+                "max_amount": 1000000,
+                "original_rate": 0.015,
+                "discounted_rate": 0.0015,
+            }
+        ],
+        redemption_fee=[
+            {
+                "min_holding_days": 0,
+                "max_holding_days": None,
+                "original_rate": 0,
+                "discounted_rate": 0,
+            }
+        ],
+        source="akshare",
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    payload = json.loads(format_fund_info_json(fund_info))
+
+    assert payload["code"] == "017763"
+    assert payload["name"] == "银河领先债券C"
+    assert payload["purchase_fee"][0]["discounted_rate"] == 0.0015
+    assert payload["redemption_fee"][0]["max_holding_days"] is None
+    assert payload["source"] == "akshare"
+
+
+def test_format_fund_info_text_outputs_chinese_labels_and_fee_tiers():
+    fund_info = FundInfo(
+        code="017763",
+        name="银河领先债券C",
+        fund_type="债券型",
+        established_date="2023-01-01",
+        asset_size="10.25亿元",
+        purchase_status="开放申购",
+        redemption_status="开放赎回",
+        morningstar_rating="5",
+        purchase_fee=[
+            {
+                "min_amount": 0,
+                "max_amount": 1000000,
+                "original_rate": 0.015,
+                "discounted_rate": 0.0015,
+            },
+            {
+                "min_amount": 1000000,
+                "max_amount": None,
+                "original_rate": None,
+                "discounted_rate": None,
+                "fixed_fee": 1000,
+            },
+        ],
+        redemption_fee=[
+            {
+                "min_holding_days": 0,
+                "max_holding_days": 7,
+                "original_rate": 0.015,
+                "discounted_rate": 0.015,
+            }
+        ],
+        source="manual",
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    text = format_fund_info_text(fund_info)
+
+    assert "基金: 017763" in text
+    assert "基金名称: 银河领先债券C" in text
+    assert "晨星评级: 5" in text
+    assert "申购费率:" in text
+    assert "0 <= amount < 1000000: 原费率 1.5%, 折扣后费率 0.15%" in text
+    assert "amount >= 1000000: 固定费用 1000元" in text
+    assert "赎回费率:" in text
+    assert "0 <= days < 7: 原费率 1.5%, 折扣后费率 1.5%" in text
 
 
 def test_format_output_omits_percentile_when_unavailable():
