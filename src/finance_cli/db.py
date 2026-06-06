@@ -16,6 +16,22 @@ class DailyMetric:
     source: str
 
 
+@dataclass(frozen=True)
+class FundInfo:
+    code: str
+    name: str
+    fund_type: str | None
+    established_date: str | None
+    asset_size: str | None
+    purchase_status: str | None
+    redemption_status: str | None
+    morningstar_rating: str | None
+    purchase_fee: list[dict[str, Any]]
+    redemption_fee: list[dict[str, Any]]
+    source: str
+    updated_at: str
+
+
 class SQLiteApiError(RuntimeError):
     def __init__(self, status_code: int, code: str, message: str) -> None:
         self.status_code = status_code
@@ -80,6 +96,30 @@ class MetricsRepository:
                     source TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (asset_type, code, metric, date)
+                )
+                """,
+                "params": [],
+            },
+        )
+
+        self.client.post_json(
+            "/v1/sqlite/exec",
+            {
+                "db": self.db_name,
+                "sql": """
+                CREATE TABLE IF NOT EXISTS fund_info (
+                    code TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    fund_type TEXT,
+                    established_date TEXT,
+                    asset_size TEXT,
+                    purchase_status TEXT,
+                    redemption_status TEXT,
+                    morningstar_rating TEXT,
+                    purchase_fee_json TEXT NOT NULL,
+                    redemption_fee_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """,
                 "params": [],
@@ -196,11 +236,127 @@ class MetricsRepository:
         columns = response.get("columns", [])
         return [DailyMetric(**dict(zip(columns, row, strict=True))) for row in response.get("rows", [])]
 
+    def upsert_fund_info(self, fund_info: FundInfo) -> int:
+        response = self.client.post_json(
+            "/v1/sqlite/exec",
+            {
+                "db": self.db_name,
+                "sql": """
+                INSERT INTO fund_info (
+                    code,
+                    name,
+                    fund_type,
+                    established_date,
+                    asset_size,
+                    purchase_status,
+                    redemption_status,
+                    morningstar_rating,
+                    purchase_fee_json,
+                    redemption_fee_json,
+                    source,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    name = excluded.name,
+                    fund_type = excluded.fund_type,
+                    established_date = excluded.established_date,
+                    asset_size = excluded.asset_size,
+                    purchase_status = excluded.purchase_status,
+                    redemption_status = excluded.redemption_status,
+                    morningstar_rating = excluded.morningstar_rating,
+                    purchase_fee_json = excluded.purchase_fee_json,
+                    redemption_fee_json = excluded.redemption_fee_json,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                "params": [
+                    fund_info.code,
+                    fund_info.name,
+                    fund_info.fund_type,
+                    fund_info.established_date,
+                    fund_info.asset_size,
+                    fund_info.purchase_status,
+                    fund_info.redemption_status,
+                    fund_info.morningstar_rating,
+                    _compact_json(fund_info.purchase_fee),
+                    _compact_json(fund_info.redemption_fee),
+                    fund_info.source,
+                    fund_info.updated_at,
+                ],
+            },
+        )
+        return int(response.get("rows_affected", 0))
+
+    def fund_info_by_code(self, code: str) -> FundInfo | None:
+        response = self.client.post_json(
+            "/v1/sqlite/query",
+            {
+                "db": self.db_name,
+                "sql": """
+                SELECT
+                    code,
+                    name,
+                    fund_type,
+                    established_date,
+                    asset_size,
+                    purchase_status,
+                    redemption_status,
+                    morningstar_rating,
+                    purchase_fee_json,
+                    redemption_fee_json,
+                    source,
+                    updated_at
+                FROM fund_info
+                WHERE code = ?
+                LIMIT 1
+                """,
+                "params": [code],
+            },
+        )
+        rows = response.get("rows", [])
+        if not rows:
+            return None
+
+        columns = response.get("columns", [])
+        row = dict(zip(columns, rows[0], strict=True))
+        return FundInfo(
+            code=str(row["code"]),
+            name=str(row["name"]),
+            fund_type=_optional_str(row["fund_type"]),
+            established_date=_optional_str(row["established_date"]),
+            asset_size=_optional_str(row["asset_size"]),
+            purchase_status=_optional_str(row["purchase_status"]),
+            redemption_status=_optional_str(row["redemption_status"]),
+            morningstar_rating=_optional_str(row["morningstar_rating"]),
+            purchase_fee=_decode_json_list(row["purchase_fee_json"]),
+            redemption_fee=_decode_json_list(row["redemption_fee_json"]),
+            source=str(row["source"]),
+            updated_at=str(row["updated_at"]),
+        )
+
 
 def _decode_json_response(body: bytes) -> dict[str, Any]:
     if not body:
         return {}
     return json.loads(body.decode("utf-8"))
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _decode_json_list(value: Any) -> list[dict[str, Any]]:
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, list):
+        raise ValueError("stored fund fee JSON must be a list")
+    return decoded
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _api_error_from_http_error(exc: HTTPError) -> SQLiteApiError:
