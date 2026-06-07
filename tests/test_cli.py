@@ -3,7 +3,7 @@ import json
 from typer.testing import CliRunner
 
 from finance_cli.cli import app
-from finance_cli.db import DailyMetric, FundInfo, SQLiteApiError
+from finance_cli.db import DailyMetric, FundInfo, OperationFee, SQLiteApiError
 from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
 from finance_cli.sources import DataSourceError
 
@@ -18,6 +18,12 @@ def _fund_info_payload():
         "fund_type": "债券型",
         "established_date": "2023-01-01",
         "asset_size": "10.25亿元",
+        "operation_fee": {
+            "total": 0.004,
+            "management_fee": 0.003,
+            "custodian_fee": 0.001,
+            "sales_service_fee": 0.0,
+        },
         "purchase_status": "开放申购",
         "purchase_limit_amount": 1000.0,
         "redemption_status": "开放赎回",
@@ -504,6 +510,13 @@ def test_fund_info_command_outputs_cached_json(monkeypatch):
     payload = json.loads(result.output)
     assert payload["code"] == "017763"
     assert payload["name"] == "银河领先债券C"
+    assert "management_fee" not in payload
+    assert payload["operation_fee"] == {
+        "total": 0.004,
+        "management_fee": 0.003,
+        "custodian_fee": 0.001,
+        "sales_service_fee": 0.0,
+    }
     assert payload["purchase_fee"][0]["discounted_rate"] == 0.0015
 
 
@@ -546,6 +559,11 @@ def test_fund_info_update_accepts_inline_json(monkeypatch):
 
     assert result.exit_code == 0
     assert seen["fund_info"].code == "017763"
+    assert seen["fund_info"].operation_fee == OperationFee(
+        management_fee=0.003,
+        custodian_fee=0.001,
+        sales_service_fee=0.0,
+    )
     assert seen["fund_info"].purchase_limit_amount == 1000.0
     assert seen["fund_info"].source == "manual"
     payload = json.loads(result.output)
@@ -702,6 +720,36 @@ def test_fund_info_update_rejects_invalid_purchase_limit_amount():
     error = json.loads(result.output)["error"]
     assert error["code"] == "invalid_parameter"
     assert "purchase_limit_amount must be a number" in error["message"]
+
+
+def test_fund_info_update_rejects_top_level_management_fee():
+    payload = _fund_info_payload()
+    payload["management_fee"] = 0.003
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "Unknown fund info fields: management_fee" in error["message"]
+
+
+def test_fund_info_update_rejects_invalid_operation_fee_rate():
+    payload = _fund_info_payload()
+    payload["operation_fee"]["management_fee"] = "0.30%/年"
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "operation_fee management_fee must be a number or null" in error["message"]
 
 
 def test_fund_nav_help_describes_nav_type_values():

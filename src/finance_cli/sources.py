@@ -12,7 +12,7 @@ import brotli
 import pandas as pd
 
 from finance_cli.analytics import parse_query_date
-from finance_cli.db import DailyMetric, FundInfo
+from finance_cli.db import DailyMetric, FundInfo, OperationFee
 
 
 INDEX_PE_DATE_COLUMNS = ("日期", "日期Date", "date", "trade_date")
@@ -64,6 +64,9 @@ FUND_NAME_KEYS = ("基金名称", "name")
 FUND_TYPE_KEYS = ("基金类型", "类型", "fund_type")
 FUND_ESTABLISHED_DATE_KEYS = ("成立日期", "成立时间", "established_date")
 FUND_ASSET_SIZE_KEYS = ("资产规模", "最新规模", "asset_size")
+FUND_MANAGEMENT_FEE_KEYS = ("管理费率", "管理费", "management_fee")
+FUND_CUSTODIAN_FEE_KEYS = ("托管费率", "托管费", "custodian_fee")
+FUND_SALES_SERVICE_FEE_KEYS = ("销售服务费率", "销售服务费", "sales_service_fee")
 FUND_PURCHASE_STATUS_COLUMNS = ("申购状态", "purchase_status")
 FUND_DAILY_PURCHASE_LIMIT_COLUMNS = ("日累计限定金额", "daily_purchase_limit", "purchase_limit")
 FUND_REDEMPTION_STATUS_COLUMNS = ("赎回状态", "redemption_status")
@@ -300,7 +303,13 @@ def fetch_fund_info(
     clock: Callable[[], str] | None = None,
 ) -> FundInfo:
     normalized_code = normalize_fund_code(code)
-    if basic_fetcher is None or purchase_fetcher is None or fee_fetcher is None or rating_fetcher is None:
+    uses_default_fetchers = (
+        basic_fetcher is None
+        or purchase_fetcher is None
+        or fee_fetcher is None
+        or rating_fetcher is None
+    )
+    if uses_default_fetchers:
         try:
             import akshare as ak
         except Exception as exc:  # pragma: no cover - depends on optional runtime environment
@@ -324,6 +333,7 @@ def fetch_fund_info(
     except Exception:
         purchase_status_frame = pd.DataFrame()
 
+    fee_page_html = None
     try:
         purchase_fee_frame = fee_fetcher(symbol=normalized_code, indicator="申购费率（前端）")
     except Exception:
@@ -331,8 +341,9 @@ def fetch_fund_info(
     if purchase_fee_frame.empty:
         try:
             page_fetcher = fee_page_fetcher or _fetch_text
+            fee_page_html = page_fetcher(FUND_FEE_URL.format(code=normalized_code))
             purchase_fee_frame = _purchase_fee_frame_from_eastmoney_html(
-                page_fetcher(FUND_FEE_URL.format(code=normalized_code))
+                fee_page_html
             )
         except Exception:
             purchase_fee_frame = pd.DataFrame()
@@ -347,6 +358,17 @@ def fetch_fund_info(
     except Exception:
         rating_frame = pd.DataFrame()
 
+    if fee_page_html is None and (uses_default_fetchers or fee_page_fetcher is not None):
+        try:
+            page_fetcher = fee_page_fetcher or _fetch_text
+            fee_page_html = page_fetcher(FUND_FEE_URL.format(code=normalized_code))
+        except Exception:
+            fee_page_html = None
+
+    operation_fee = None
+    if fee_page_html is not None:
+        operation_fee = _operation_fee_from_eastmoney_html(fee_page_html)
+
     return normalize_fund_info(
         normalized_code,
         basic_frame,
@@ -355,6 +377,7 @@ def fetch_fund_info(
         redemption_fee_frame,
         rating_frame,
         updated_at=now(),
+        operation_fee=operation_fee,
     )
 
 
@@ -717,6 +740,7 @@ def normalize_fund_info(
     redemption_fee_frame: pd.DataFrame,
     rating_frame: pd.DataFrame,
     updated_at: str,
+    operation_fee: OperationFee | None = None,
 ) -> FundInfo:
     normalized_code = normalize_fund_code(code)
     basic = _fund_basic_mapping(basic_frame)
@@ -725,12 +749,16 @@ def normalize_fund_info(
         raise DataSourceError(f"No fund name found for {normalized_code}")
     status_row = _row_for_code(purchase_status_frame, normalized_code)
     rating_row = _row_for_code(rating_frame, normalized_code)
+    operation_fee = operation_fee or OperationFee(
+        management_fee=_optional_rate_from_mapping(basic, FUND_MANAGEMENT_FEE_KEYS)
+    )
     return FundInfo(
         code=normalized_code,
         name=name,
         fund_type=_first_mapping_value(basic, FUND_TYPE_KEYS),
         established_date=_first_mapping_value(basic, FUND_ESTABLISHED_DATE_KEYS),
         asset_size=_first_mapping_value(basic, FUND_ASSET_SIZE_KEYS),
+        operation_fee=operation_fee,
         purchase_status=_first_row_value(status_row, FUND_PURCHASE_STATUS_COLUMNS),
         purchase_limit_amount=_purchase_limit_amount_from_status_row(status_row),
         redemption_status=_first_row_value(status_row, FUND_REDEMPTION_STATUS_COLUMNS),
@@ -748,6 +776,39 @@ def _purchase_fee_frame_from_eastmoney_html(html: str) -> pd.DataFrame:
         return pd.DataFrame()
     tables = pd.read_html(StringIO(section))
     return tables[0] if tables else pd.DataFrame()
+
+
+def _operation_fee_from_eastmoney_html(html: str) -> OperationFee:
+    section = _html_section_after_title(html, "运作费用")
+    if section is None:
+        return OperationFee()
+    try:
+        tables = pd.read_html(StringIO(section))
+    except ValueError:
+        return OperationFee()
+    for table in tables:
+        values = [
+            str(value).strip()
+            for _, row in table.iterrows()
+            for value in row
+            if not _is_missing(value)
+        ]
+        return OperationFee(
+            management_fee=_fee_value_after_label(values, FUND_MANAGEMENT_FEE_KEYS),
+            custodian_fee=_fee_value_after_label(values, FUND_CUSTODIAN_FEE_KEYS),
+            sales_service_fee=_fee_value_after_label(values, FUND_SALES_SERVICE_FEE_KEYS),
+        )
+    return OperationFee()
+
+
+def _fee_value_after_label(values: list[str], labels: tuple[str, ...]) -> float | None:
+    for index, value in enumerate(values[:-1]):
+        if value in labels and values[index + 1]:
+            try:
+                return _parse_rate(values[index + 1])
+            except DataSourceError:
+                return None
+    return None
 
 
 def _html_section_after_title(html: str, title: str) -> str | None:
@@ -773,6 +834,16 @@ def _first_mapping_value(mapping: dict[str, str], keys: tuple[str, ...]) -> str 
         if key in mapping and mapping[key]:
             return mapping[key]
     return None
+
+
+def _optional_rate_from_mapping(mapping: dict[str, str], keys: tuple[str, ...]) -> float | None:
+    value = _first_mapping_value(mapping, keys)
+    if value is None:
+        return None
+    try:
+        return _parse_rate(value)
+    except DataSourceError:
+        return None
 
 
 def _row_for_code(frame: pd.DataFrame, code: str) -> pd.Series | None:
@@ -902,10 +973,10 @@ def _split_combined_purchase_rate(text: str) -> tuple[str, str]:
 
 
 def _parse_rate(text: str) -> float:
-    normalized = text.strip()
+    normalized = text.strip().replace(" ", "")
     if normalized in {"0", "0.00%", "免费"}:
         return 0
-    if match := re.fullmatch(r"(\d+(?:\.\d+)?)%", normalized):
+    if match := re.fullmatch(r"(\d+(?:\.\d+)?)%(?:/年|（每年）)?", normalized):
         return float(match.group(1)) / 100
     raise DataSourceError(f"Unparseable rate: {text}")
 

@@ -1,6 +1,6 @@
 import json
 
-from finance_cli.db import FundInfo
+from finance_cli.db import FundInfo, OperationFee
 from finance_cli.output import (
     format_fund_info_json,
     format_fund_info_text,
@@ -126,6 +126,11 @@ def test_format_fund_info_json_outputs_expected_payload():
         fund_type="债券型",
         established_date="2023-01-01",
         asset_size="10.25亿元",
+        operation_fee=OperationFee(
+            management_fee=0.003,
+            custodian_fee=0.001,
+            sales_service_fee=0.0,
+        ),
         purchase_status="开放申购",
         redemption_status="开放赎回",
         morningstar_rating="5",
@@ -154,6 +159,13 @@ def test_format_fund_info_json_outputs_expected_payload():
 
     assert payload["code"] == "017763"
     assert payload["name"] == "银河领先债券C"
+    assert "management_fee" not in payload
+    assert payload["operation_fee"] == {
+        "total": 0.004,
+        "management_fee": 0.003,
+        "custodian_fee": 0.001,
+        "sales_service_fee": 0.0,
+    }
     assert payload["purchase_fee"][0]["discounted_rate"] == 0.0015
     assert payload["redemption_fee"][0]["max_holding_days"] is None
     assert payload["purchase_limit_amount"] == 1000.0
@@ -167,6 +179,11 @@ def test_format_fund_info_text_outputs_chinese_labels_and_fee_tiers():
         fund_type="债券型",
         established_date="2023-01-01",
         asset_size="10.25亿元",
+        operation_fee=OperationFee(
+            management_fee=0.003,
+            custodian_fee=0.001,
+            sales_service_fee=0.0,
+        ),
         purchase_status="开放申购",
         redemption_status="开放赎回",
         morningstar_rating="5",
@@ -201,6 +218,10 @@ def test_format_fund_info_text_outputs_chinese_labels_and_fee_tiers():
 
     assert "基金: 017763" in text
     assert "基金名称: 银河领先债券C" in text
+    assert "运作费率: 0.40%（每年）" in text
+    assert "  管理费率: 0.30%（每年）" in text
+    assert "  托管费率: 0.10%（每年）" in text
+    assert "  销售服务费率: 0.00%（每年）" in text
     assert "晨星评级: 5" in text
     assert "申购费率:" in text
     assert "0 <= amount < 1000000: 原费率 1.5%, 折扣后费率 0.15%" in text

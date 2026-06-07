@@ -38,7 +38,7 @@ from finance_cli.sources import (
     _fetch_text,
     _to_danjuan_index_code,
 )
-from finance_cli.db import DailyMetric
+from finance_cli.db import DailyMetric, OperationFee
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -383,8 +383,8 @@ def test_normalize_purchase_fee_rows_rejects_unparseable_tier():
 def test_normalize_fund_info_combines_profile_status_fees_and_rating():
     basic_frame = pd.DataFrame(
         {
-            "item": ["基金名称", "基金类型", "成立时间", "最新规模"],
-            "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元"],
+            "item": ["基金名称", "基金类型", "成立时间", "最新规模", "管理费率"],
+            "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元", "0.30%/年"],
         }
     )
     purchase_status_frame = pd.DataFrame(
@@ -429,6 +429,7 @@ def test_normalize_fund_info_combines_profile_status_fees_and_rating():
     assert result.fund_type == "债券型"
     assert result.established_date == "2023-01-01"
     assert result.asset_size == "10.25亿元"
+    assert result.operation_fee == OperationFee(management_fee=0.003)
     assert result.purchase_status == "开放申购"
     assert result.purchase_limit_amount is None
     assert result.redemption_status == "开放赎回"
@@ -630,6 +631,10 @@ def test_fetch_fund_info_falls_back_to_eastmoney_purchase_fee_table():
         return """
         <html><body>
         <h4 class="t">交易状态</h4><table><tr><td>申购状态</td><td>限大额</td></tr></table>
+        <h4 class="t"><label class="left">运作费用</label><label class="right"></label></h4>
+        <table>
+          <tr><td>管理费率</td><td>0.50%（每年）</td><td>托管费率</td><td>0.10%（每年）</td><td>销售服务费率</td><td>0.00%（每年）</td></tr>
+        </table>
         <h4 class="t"><label class="left">申购费率</label><label class="right"></label></h4>
         <table>
           <tr><th>适用金额</th><th>原费率|天天基金优惠费率</th></tr>
@@ -652,6 +657,12 @@ def test_fetch_fund_info_falls_back_to_eastmoney_purchase_fee_table():
     )
 
     assert result.purchase_limit_amount == 1000.0
+    assert result.operation_fee == OperationFee(
+        management_fee=0.005,
+        custodian_fee=0.001,
+        sales_service_fee=0.0,
+    )
+    assert result.operation_fee.total == 0.006
     assert result.purchase_fee == [
         {
             "min_amount": 0,

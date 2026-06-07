@@ -11,7 +11,7 @@ from typer.core import TyperGroup
 
 from finance_cli.analytics import validate_years
 from finance_cli.config import load_config
-from finance_cli.db import FundInfo, MetricsRepository, SQLiteApiError
+from finance_cli.db import FundInfo, MetricsRepository, OperationFee, SQLiteApiError
 from finance_cli.output import (
     format_fund_info_json,
     format_fund_info_text,
@@ -91,6 +91,7 @@ FUND_INFO_FIELDS = {
     "fund_type",
     "established_date",
     "asset_size",
+    "operation_fee",
     "purchase_status",
     "purchase_limit_amount",
     "redemption_status",
@@ -99,6 +100,12 @@ FUND_INFO_FIELDS = {
     "redemption_fee",
     "source",
     "updated_at",
+}
+OPERATION_FEE_FIELDS = {
+    "total",
+    "management_fee",
+    "custodian_fee",
+    "sales_service_fee",
 }
 PURCHASE_FEE_FIELDS = {
     "min_amount",
@@ -233,12 +240,14 @@ def _fund_info_from_payload(code: str, payload: dict[str, object]) -> FundInfo:
     purchase_fee = _validate_fee_list(payload.get("purchase_fee", []), PURCHASE_FEE_FIELDS, "purchase_fee")
     redemption_fee = _validate_fee_list(payload.get("redemption_fee", []), REDEMPTION_FEE_FIELDS, "redemption_fee")
     purchase_limit_amount = _validate_purchase_limit_amount(payload.get("purchase_limit_amount", 0))
+    operation_fee = _validate_operation_fee(payload.get("operation_fee", {}))
     return FundInfo(
         code=code,
         name=name.strip(),
         fund_type=_optional_payload_str(payload.get("fund_type")),
         established_date=_optional_payload_str(payload.get("established_date")),
         asset_size=_optional_payload_str(payload.get("asset_size")),
+        operation_fee=operation_fee,
         purchase_status=_optional_payload_str(payload.get("purchase_status")),
         purchase_limit_amount=purchase_limit_amount,
         redemption_status=_optional_payload_str(payload.get("redemption_status")),
@@ -247,6 +256,25 @@ def _fund_info_from_payload(code: str, payload: dict[str, object]) -> FundInfo:
         redemption_fee=redemption_fee,
         source=source.strip(),
         updated_at=updated_at.strip(),
+    )
+
+
+def _validate_operation_fee(value: object) -> OperationFee:
+    if value is None:
+        return OperationFee()
+    if not isinstance(value, dict):
+        raise JsonClickException("invalid_parameter", "operation_fee must be an object or null", exit_code=2)
+    unknown_fields = set(value) - OPERATION_FEE_FIELDS
+    if unknown_fields:
+        names = ", ".join(sorted(unknown_fields))
+        raise JsonClickException("invalid_parameter", f"Unknown operation_fee fields: {names}", exit_code=2)
+    for field in OPERATION_FEE_FIELDS:
+        if field in value:
+            _require_optional_number(value, field, "operation_fee")
+    return OperationFee(
+        management_fee=_optional_payload_float(value.get("management_fee")),
+        custodian_fee=_optional_payload_float(value.get("custodian_fee")),
+        sales_service_fee=_optional_payload_float(value.get("sales_service_fee")),
     )
 
 
@@ -275,6 +303,12 @@ def _validate_purchase_limit_amount(value: object) -> float | None:
         return None
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise JsonClickException("invalid_parameter", "purchase_limit_amount must be a number", exit_code=2)
+    return float(value)
+
+
+def _optional_payload_float(value: object) -> float | None:
+    if value is None:
+        return None
     return float(value)
 
 

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +15,20 @@ class DailyMetric:
     date: str
     value: float
     source: str
+
+
+@dataclass(frozen=True)
+class OperationFee:
+    management_fee: float | None = None
+    custodian_fee: float | None = None
+    sales_service_fee: float | None = None
+
+    @property
+    def total(self) -> float | None:
+        parts = (self.management_fee, self.custodian_fee, self.sales_service_fee)
+        if any(value is None for value in parts):
+            return None
+        return sum(float(value) for value in parts)
 
 
 @dataclass(frozen=True)
@@ -31,6 +46,19 @@ class FundInfo:
     source: str
     updated_at: str
     purchase_limit_amount: float | None = 0
+    operation_fee: OperationFee = OperationFee()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.operation_fee, dict):
+            object.__setattr__(
+                self,
+                "operation_fee",
+                OperationFee(
+                    management_fee=_optional_float(self.operation_fee.get("management_fee")),
+                    custodian_fee=_optional_float(self.operation_fee.get("custodian_fee")),
+                    sales_service_fee=_optional_float(self.operation_fee.get("sales_service_fee")),
+                ),
+            )
 
 
 class SQLiteApiError(RuntimeError):
@@ -114,6 +142,9 @@ class MetricsRepository:
                     fund_type TEXT,
                     established_date TEXT,
                     asset_size TEXT,
+                    management_fee REAL,
+                    custodian_fee REAL,
+                    sales_service_fee REAL,
                     purchase_status TEXT,
                     purchase_limit_amount REAL NOT NULL DEFAULT 0,
                     redemption_status TEXT,
@@ -138,6 +169,42 @@ class MetricsRepository:
             )
         except SQLiteApiError as exc:
             if not _is_duplicate_column_error(exc, "purchase_limit_amount"):
+                raise
+        try:
+            self.client.post_json(
+                "/v1/sqlite/exec",
+                {
+                    "db": self.db_name,
+                    "sql": "ALTER TABLE fund_info ADD COLUMN management_fee REAL",
+                    "params": [],
+                },
+            )
+        except SQLiteApiError as exc:
+            if not _is_duplicate_column_error(exc, "management_fee"):
+                raise
+        try:
+            self.client.post_json(
+                "/v1/sqlite/exec",
+                {
+                    "db": self.db_name,
+                    "sql": "ALTER TABLE fund_info ADD COLUMN custodian_fee REAL",
+                    "params": [],
+                },
+            )
+        except SQLiteApiError as exc:
+            if not _is_duplicate_column_error(exc, "custodian_fee"):
+                raise
+        try:
+            self.client.post_json(
+                "/v1/sqlite/exec",
+                {
+                    "db": self.db_name,
+                    "sql": "ALTER TABLE fund_info ADD COLUMN sales_service_fee REAL",
+                    "params": [],
+                },
+            )
+        except SQLiteApiError as exc:
+            if not _is_duplicate_column_error(exc, "sales_service_fee"):
                 raise
 
     def upsert_metrics(self, metrics: list[DailyMetric]) -> int:
@@ -262,6 +329,9 @@ class MetricsRepository:
                     fund_type,
                     established_date,
                     asset_size,
+                    management_fee,
+                    custodian_fee,
+                    sales_service_fee,
                     purchase_status,
                     purchase_limit_amount,
                     redemption_status,
@@ -271,12 +341,15 @@ class MetricsRepository:
                     source,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(code) DO UPDATE SET
                     name = excluded.name,
                     fund_type = excluded.fund_type,
                     established_date = excluded.established_date,
                     asset_size = excluded.asset_size,
+                    management_fee = excluded.management_fee,
+                    custodian_fee = excluded.custodian_fee,
+                    sales_service_fee = excluded.sales_service_fee,
                     purchase_status = excluded.purchase_status,
                     purchase_limit_amount = excluded.purchase_limit_amount,
                     redemption_status = excluded.redemption_status,
@@ -292,6 +365,9 @@ class MetricsRepository:
                     fund_info.fund_type,
                     fund_info.established_date,
                     fund_info.asset_size,
+                    fund_info.operation_fee.management_fee,
+                    fund_info.operation_fee.custodian_fee,
+                    fund_info.operation_fee.sales_service_fee,
                     fund_info.purchase_status,
                     _stored_purchase_limit_amount(fund_info.purchase_limit_amount),
                     fund_info.redemption_status,
@@ -317,6 +393,9 @@ class MetricsRepository:
                     fund_type,
                     established_date,
                     asset_size,
+                    management_fee,
+                    custodian_fee,
+                    sales_service_fee,
                     purchase_status,
                     purchase_limit_amount,
                     redemption_status,
@@ -344,6 +423,11 @@ class MetricsRepository:
             fund_type=_optional_str(row["fund_type"]),
             established_date=_optional_str(row["established_date"]),
             asset_size=_optional_str(row["asset_size"]),
+            operation_fee=OperationFee(
+                management_fee=_optional_float(row.get("management_fee")),
+                custodian_fee=_optional_float(row.get("custodian_fee")),
+                sales_service_fee=_optional_float(row.get("sales_service_fee")),
+            ),
             purchase_status=_optional_str(row["purchase_status"]),
             purchase_limit_amount=_purchase_limit_amount_from_stored_value(
                 row["purchase_status"],
@@ -379,6 +463,18 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if match := re.fullmatch(r"(\d+(?:\.\d+)?)%(?:/年|（每年）)?", text):
+            return float(match.group(1)) / 100
+    return float(value)
 
 
 def _stored_purchase_limit_amount(value: float | None) -> float:

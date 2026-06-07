@@ -1,6 +1,6 @@
 import pytest
 
-from finance_cli.db import DailyMetric, FundInfo, MetricsRepository, SQLiteApiError
+from finance_cli.db import DailyMetric, FundInfo, MetricsRepository, OperationFee, SQLiteApiError
 
 
 class FakeSQLiteApiClient:
@@ -46,6 +46,9 @@ def test_repository_initialize_creates_fund_info_schema():
     schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
     assert "CREATE TABLE IF NOT EXISTS daily_metrics" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS fund_info" in schema_sql
+    assert "management_fee REAL" in schema_sql
+    assert "custodian_fee REAL" in schema_sql
+    assert "sales_service_fee REAL" in schema_sql
     assert "purchase_limit_amount REAL NOT NULL DEFAULT 0" in schema_sql
     assert "purchase_fee_json TEXT NOT NULL" in schema_sql
     assert "redemption_fee_json TEXT NOT NULL" in schema_sql
@@ -67,6 +70,47 @@ def test_repository_initialize_adds_purchase_limit_amount_column_to_existing_sch
 
     schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
     assert "ALTER TABLE fund_info ADD COLUMN purchase_limit_amount REAL NOT NULL DEFAULT 0" in schema_sql
+
+
+def test_repository_initialize_adds_management_fee_column_to_existing_schema():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/exec": [
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+                SQLiteApiError(400, "invalid_request", "duplicate column name: management_fee"),
+            ]
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    repo.initialize()
+
+    schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
+    assert "ALTER TABLE fund_info ADD COLUMN management_fee REAL" in schema_sql
+
+
+def test_repository_initialize_adds_operation_fee_columns_to_existing_schema():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/exec": [
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+                SQLiteApiError(400, "invalid_request", "duplicate column name: management_fee"),
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+            ]
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    repo.initialize()
+
+    schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
+    assert "ALTER TABLE fund_info ADD COLUMN custodian_fee REAL" in schema_sql
+    assert "ALTER TABLE fund_info ADD COLUMN sales_service_fee REAL" in schema_sql
 
 
 def test_repository_initialize_treats_existing_database_as_success():
@@ -134,6 +178,11 @@ def test_repository_upserts_fund_info():
             fund_type="债券型",
             established_date="2023-01-01",
             asset_size="10.25亿元",
+            operation_fee=OperationFee(
+                management_fee=0.003,
+                custodian_fee=0.001,
+                sales_service_fee=0.0,
+            ),
             purchase_status="开放申购",
             purchase_limit_amount=1000.0,
             redemption_status="开放赎回",
@@ -165,22 +214,27 @@ def test_repository_upserts_fund_info():
     assert payload["db"] == "finance.db"
     assert "INSERT INTO fund_info" in payload["sql"]
     assert "ON CONFLICT(code) DO UPDATE SET" in payload["sql"]
-    assert payload["params"][0:10] == [
+    assert payload["params"][0:12] == [
         "017763",
         "银河领先债券C",
         "债券型",
         "2023-01-01",
         "10.25亿元",
+        0.003,
+        0.001,
+        0.0,
         "开放申购",
         1000.0,
         "开放赎回",
         "5",
-        '[{"min_amount":0,"max_amount":1000000,"original_rate":0.015,"discounted_rate":0.0015}]',
     ]
-    assert payload["params"][10] == (
+    assert payload["params"][12] == (
+        '[{"min_amount":0,"max_amount":1000000,"original_rate":0.015,"discounted_rate":0.0015}]'
+    )
+    assert payload["params"][13] == (
         '[{"min_holding_days":0,"max_holding_days":7,"original_rate":0.015,"discounted_rate":0.015}]'
     )
-    assert payload["params"][11:13] == ["manual", "2026-06-07T12:00:00+00:00"]
+    assert payload["params"][14:16] == ["manual", "2026-06-07T12:00:00+00:00"]
 
 
 def test_repository_upserts_unlimited_purchase_limit_as_zero():
@@ -205,7 +259,7 @@ def test_repository_upserts_unlimited_purchase_limit_as_zero():
         )
     )
 
-    assert client.calls[0][1]["params"][6] == 0
+    assert client.calls[0][1]["params"][9] == 0
 
 
 def test_repository_deletes_metrics_for_single_series():
@@ -281,6 +335,9 @@ def test_repository_queries_fund_info_by_code():
                     "fund_type",
                     "established_date",
                     "asset_size",
+                    "management_fee",
+                    "custodian_fee",
+                    "sales_service_fee",
                     "purchase_status",
                     "purchase_limit_amount",
                     "redemption_status",
@@ -297,6 +354,9 @@ def test_repository_queries_fund_info_by_code():
                         "债券型",
                         "2023-01-01",
                         "10.25亿元",
+                        0.003,
+                        0.001,
+                        0.0,
                         "开放申购",
                         1000.0,
                         "开放赎回",
@@ -321,6 +381,11 @@ def test_repository_queries_fund_info_by_code():
         fund_type="债券型",
         established_date="2023-01-01",
         asset_size="10.25亿元",
+        operation_fee=OperationFee(
+            management_fee=0.003,
+            custodian_fee=0.001,
+            sales_service_fee=0.0,
+        ),
         purchase_status="开放申购",
         purchase_limit_amount=1000.0,
         redemption_status="开放赎回",

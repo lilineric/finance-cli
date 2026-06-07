@@ -75,6 +75,7 @@ def format_fund_info_json(result: FundInfo) -> str:
             "fund_type": result.fund_type,
             "established_date": result.established_date,
             "asset_size": result.asset_size,
+            "operation_fee": _operation_fee_json(result),
             "purchase_status": result.purchase_status,
             "purchase_limit_amount": result.purchase_limit_amount,
             "redemption_status": result.redemption_status,
@@ -95,6 +96,10 @@ def format_fund_info_text(result: FundInfo) -> str:
         f"基金类型: {_display_value(result.fund_type)}",
         f"成立日期: {_display_value(result.established_date)}",
         f"资产规模: {_display_value(result.asset_size)}",
+        f"运作费率: {_format_annual_rate(result.operation_fee.total)}",
+        f"  管理费率: {_format_annual_rate(result.operation_fee.management_fee)}",
+        f"  托管费率: {_format_annual_rate(result.operation_fee.custodian_fee)}",
+        f"  销售服务费率: {_format_annual_rate(result.operation_fee.sales_service_fee)}",
         f"申购状态: {_purchase_status_text(result)}",
     ]
     lines.extend(
@@ -140,6 +145,19 @@ def format_text(result: MetricQueryResult) -> str:
 
 def _display_value(value: object) -> str:
     return "未知" if value is None else str(value)
+
+
+def _operation_fee_json(result: FundInfo) -> dict[str, float | None]:
+    return {
+        "total": _json_rate(result.operation_fee.total),
+        "management_fee": _json_rate(result.operation_fee.management_fee),
+        "custodian_fee": _json_rate(result.operation_fee.custodian_fee),
+        "sales_service_fee": _json_rate(result.operation_fee.sales_service_fee),
+    }
+
+
+def _json_rate(value: float | None) -> float | None:
+    return None if value is None else round(float(value), 12)
 
 
 def _purchase_fee_lines(fee_tiers: list[dict[str, object]]) -> list[str]:
@@ -196,6 +214,12 @@ def _format_rate(value: object) -> str:
         return "未知"
     percentage = float(value) * 100
     return f"{percentage:g}%"
+
+
+def _format_annual_rate(value: float | None) -> str:
+    if value is None:
+        return "未知"
+    return f"{float(value) * 100:.2f}%（每年）"
 
 
 def _format_amount(value: object) -> str:

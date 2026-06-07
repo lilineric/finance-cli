@@ -85,6 +85,12 @@ decimal values where `0.015` means `1.5%`.
   "fund_type": "债券型",
   "established_date": "2023-01-01",
   "asset_size": "10.25亿元",
+  "operation_fee": {
+    "total": 0.004,
+    "management_fee": 0.003,
+    "custodian_fee": 0.001,
+    "sales_service_fee": 0.0
+  },
   "purchase_status": "开放申购",
   "purchase_limit_amount": null,
   "redemption_status": "开放赎回",
