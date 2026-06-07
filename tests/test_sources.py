@@ -180,6 +180,59 @@ def test_normalize_purchase_fee_rows_parses_amount_tiers_and_discount_rates():
     ]
 
 
+def test_normalize_purchase_fee_rows_parses_eastmoney_combined_rate_column():
+    frame = pd.DataFrame(
+        {
+            "适用金额": ["小于100万元", "大于等于100万元，小于200万元", "大于等于200万元"],
+            "原费率|天天基金优惠费率": ["1.50% | 0.15%", "1.00% | 0.10%", "每笔1000元"],
+        }
+    )
+
+    tiers = normalize_purchase_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_amount": 0,
+            "max_amount": 1000000,
+            "original_rate": 0.015,
+            "discounted_rate": 0.0015,
+        },
+        {
+            "min_amount": 1000000,
+            "max_amount": 2000000,
+            "original_rate": 0.01,
+            "discounted_rate": 0.001,
+        },
+        {
+            "min_amount": 2000000,
+            "max_amount": None,
+            "original_rate": None,
+            "discounted_rate": None,
+            "fixed_fee": 1000,
+        },
+    ]
+
+
+def test_normalize_purchase_fee_rows_parses_flat_zero_fee_row():
+    frame = pd.DataFrame(
+        {
+            "适用金额": ["---"],
+            "费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_purchase_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_amount": 0,
+            "max_amount": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
 def test_normalize_redemption_fee_rows_parses_holding_period_tiers():
     frame = pd.DataFrame(
         {
@@ -206,6 +259,76 @@ def test_normalize_redemption_fee_rows_parses_holding_period_tiers():
     ]
 
 
+def test_normalize_redemption_fee_rows_accepts_applicable_period_column_and_comma_ranges():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["小于7天", "大于等于7天，小于30天", "大于等于30天，小于180天", "大于等于180天"],
+            "赎回费率": ["1.50%", "0.50%", "0.10%", "0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": 7,
+            "original_rate": 0.015,
+            "discounted_rate": 0.015,
+        },
+        {
+            "min_holding_days": 7,
+            "max_holding_days": 30,
+            "original_rate": 0.005,
+            "discounted_rate": 0.005,
+        },
+        {
+            "min_holding_days": 30,
+            "max_holding_days": 180,
+            "original_rate": 0.001,
+            "discounted_rate": 0.001,
+        },
+        {
+            "min_holding_days": 180,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        },
+    ]
+
+
+def test_normalize_redemption_fee_rows_accepts_less_than_or_equal_ranges():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["小于等于6天", "大于等于7天，小于等于29天", "大于等于730天"],
+            "赎回费率": ["1.50%", "0.75%", "0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": 7,
+            "original_rate": 0.015,
+            "discounted_rate": 0.015,
+        },
+        {
+            "min_holding_days": 7,
+            "max_holding_days": 30,
+            "original_rate": 0.0075,
+            "discounted_rate": 0.0075,
+        },
+        {
+            "min_holding_days": 730,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        },
+    ]
+
+
 def test_normalize_purchase_fee_rows_rejects_unparseable_tier():
     frame = pd.DataFrame(
         {
@@ -222,7 +345,7 @@ def test_normalize_purchase_fee_rows_rejects_unparseable_tier():
 def test_normalize_fund_info_combines_profile_status_fees_and_rating():
     basic_frame = pd.DataFrame(
         {
-            "item": ["基金名称", "基金类型", "成立日期", "资产规模"],
+            "item": ["基金名称", "基金类型", "成立时间", "最新规模"],
             "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元"],
         }
     )
@@ -269,12 +392,104 @@ def test_normalize_fund_info_combines_profile_status_fees_and_rating():
     assert result.established_date == "2023-01-01"
     assert result.asset_size == "10.25亿元"
     assert result.purchase_status == "开放申购"
+    assert result.purchase_limit_amount is None
     assert result.redemption_status == "开放赎回"
     assert result.morningstar_rating == "5"
     assert result.purchase_fee[0]["discounted_rate"] == 0.0015
     assert result.redemption_fee[0]["original_rate"] == 0.015
     assert result.source == "akshare"
     assert result.updated_at == "2026-06-07T12:00:00+00:00"
+
+
+def test_normalize_fund_info_reads_daily_purchase_limit():
+    basic_frame = pd.DataFrame(
+        {
+            "item": ["基金名称"],
+            "value": ["华宝纳斯达克精选股票发起式(QDII)A"],
+        }
+    )
+    purchase_status_frame = pd.DataFrame(
+        {
+            "基金代码": ["017436"],
+            "申购状态": ["限大额"],
+            "赎回状态": ["开放赎回"],
+            "日累计限定金额": [1000.0],
+        }
+    )
+
+    result = normalize_fund_info(
+        "017436",
+        basic_frame,
+        purchase_status_frame,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.purchase_status == "限大额"
+    assert result.purchase_limit_amount == 1000.0
+
+
+def test_normalize_fund_info_ignores_unlimited_purchase_limit_sentinel():
+    basic_frame = pd.DataFrame(
+        {
+            "item": ["基金名称"],
+            "value": ["银河领先债券C"],
+        }
+    )
+    purchase_status_frame = pd.DataFrame(
+        {
+            "基金代码": ["017763"],
+            "申购状态": ["开放申购"],
+            "赎回状态": ["开放赎回"],
+            "日累计限定金额": [100000000000.0],
+        }
+    )
+
+    result = normalize_fund_info(
+        "017763",
+        basic_frame,
+        purchase_status_frame,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.purchase_status == "开放申购"
+    assert result.purchase_limit_amount is None
+
+
+@pytest.mark.parametrize("purchase_status", ["暂停申购", "封闭期", "场内交易", "认购期", ""])
+def test_normalize_fund_info_sets_zero_purchase_limit_when_buying_unavailable(purchase_status):
+    basic_frame = pd.DataFrame(
+        {
+            "item": ["基金名称"],
+            "value": ["易方达信用债债券A"],
+        }
+    )
+    purchase_status_frame = pd.DataFrame(
+        {
+            "基金代码": ["000032"],
+            "申购状态": [purchase_status],
+            "赎回状态": ["开放赎回"],
+            "日累计限定金额": [100000000000.0],
+        }
+    )
+
+    result = normalize_fund_info(
+        "000032",
+        basic_frame,
+        purchase_status_frame,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        updated_at="2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.purchase_status == (purchase_status or None)
+    assert result.purchase_limit_amount == 0
 
 
 def test_fetch_fund_info_aggregates_akshare_frames():
@@ -284,7 +499,7 @@ def test_fetch_fund_info_aggregates_akshare_frames():
         calls.append(("basic", symbol))
         return pd.DataFrame(
             {
-                "item": ["基金名称", "基金类型", "成立日期", "资产规模"],
+                "item": ["基金名称", "基金类型", "成立时间", "最新规模"],
                 "value": ["银河领先债券C", "债券型", "2023-01-01", "10.25亿元"],
             }
         )
@@ -311,8 +526,8 @@ def test_fetch_fund_info_aggregates_akshare_frames():
             )
         return pd.DataFrame(
             {
-                "持有期限": ["小于7天"],
-                "赎回费率": ["1.50%"],
+                "适用期限": ["小于7天", "大于等于7天，小于30天"],
+                "赎回费率": ["1.50%", "0.10%"],
             }
         )
 
@@ -330,6 +545,8 @@ def test_fetch_fund_info_aggregates_akshare_frames():
     )
 
     assert result.name == "银河领先债券C"
+    assert result.established_date == "2023-01-01"
+    assert result.asset_size == "10.25亿元"
     assert result.purchase_status == "开放申购"
     assert result.morningstar_rating == "5"
     assert result.purchase_fee[0]["max_amount"] == 1000000
@@ -340,6 +557,88 @@ def test_fetch_fund_info_aggregates_akshare_frames():
         ("fee", "017763", "申购费率（前端）"),
         ("fee", "017763", "赎回费率"),
         ("rating", None),
+    ]
+
+
+def test_fetch_fund_info_falls_back_to_eastmoney_purchase_fee_table():
+    calls = []
+
+    def basic_fetcher(symbol):
+        return pd.DataFrame(
+            {
+                "item": ["基金名称"],
+                "value": ["华宝纳斯达克精选股票发起式(QDII)A"],
+            }
+        )
+
+    def purchase_fetcher():
+        return pd.DataFrame(
+            {
+                "基金代码": ["017436"],
+                "申购状态": ["限大额"],
+                "赎回状态": ["开放赎回"],
+                "日累计限定金额": [1000.0],
+            }
+        )
+
+    def fee_fetcher(symbol, indicator):
+        calls.append(("fee", symbol, indicator))
+        if indicator == "申购费率（前端）":
+            raise KeyError(indicator)
+        return pd.DataFrame({"适用期限": ["小于7天"], "赎回费率": ["1.50%"]})
+
+    def fee_page_fetcher(url):
+        calls.append(("fee_page", url))
+        return """
+        <html><body>
+        <h4 class="t">交易状态</h4><table><tr><td>申购状态</td><td>限大额</td></tr></table>
+        <h4 class="t"><label class="left">申购费率</label><label class="right"></label></h4>
+        <table>
+          <tr><th>适用金额</th><th>原费率|天天基金优惠费率</th></tr>
+          <tr><td>小于100万元</td><td>1.50% | 0.15%</td></tr>
+          <tr><td>大于等于100万元，小于200万元</td><td>1.00% | 0.10%</td></tr>
+          <tr><td>大于等于200万元</td><td>每笔1000元</td></tr>
+        </table>
+        <h4 class="t">赎回费率</h4><table><tr><td>小于7天</td><td>1.50%</td></tr></table>
+        </body></html>
+        """
+
+    result = fetch_fund_info(
+        "017436",
+        basic_fetcher=basic_fetcher,
+        purchase_fetcher=purchase_fetcher,
+        fee_fetcher=fee_fetcher,
+        rating_fetcher=lambda: pd.DataFrame(),
+        fee_page_fetcher=fee_page_fetcher,
+        clock=lambda: "2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.purchase_limit_amount == 1000.0
+    assert result.purchase_fee == [
+        {
+            "min_amount": 0,
+            "max_amount": 1000000,
+            "original_rate": 0.015,
+            "discounted_rate": 0.0015,
+        },
+        {
+            "min_amount": 1000000,
+            "max_amount": 2000000,
+            "original_rate": 0.01,
+            "discounted_rate": 0.001,
+        },
+        {
+            "min_amount": 2000000,
+            "max_amount": None,
+            "original_rate": None,
+            "discounted_rate": None,
+            "fixed_fee": 1000,
+        },
+    ]
+    assert calls == [
+        ("fee", "017436", "申购费率（前端）"),
+        ("fee_page", "https://fundf10.eastmoney.com/jjfl_017436.html"),
+        ("fee", "017436", "赎回费率"),
     ]
 
 
@@ -494,6 +793,32 @@ def test_fetch_index_pe_rows_supports_ndx_from_worldperatio_source():
     ]
 
 
+def test_fetch_index_pe_rows_supports_sp500_from_danjuan_source():
+    calls = []
+
+    def fetcher():
+        calls.append("fetch")
+        return """
+        {
+            "data": {
+                "index_eva_pe_growths": [
+                    {"pe": 23.1982, "ts": 1465142400000},
+                    {"pe": 28.2749, "ts": 1780588800000}
+                ]
+            },
+            "result_code": 0
+        }
+        """
+
+    rows = fetch_index_pe_rows("SP500", fetcher=fetcher)
+
+    assert calls == ["fetch"]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "SP500", "rolling_pe", "2016-06-06", 23.1982, "danjuan"),
+        ("index", "SP500", "rolling_pe", "2026-06-05", 28.2749, "danjuan"),
+    ]
+
+
 def test_normalize_danjuan_ndx_pe_rows_rejects_error_response():
     with pytest.raises(DataSourceError, match="Danjuan PE data request failed"):
         normalize_danjuan_index_pe_rows("NDX", '{"result_code": 1, "message": "failed"}')
@@ -537,6 +862,10 @@ def test_normalize_ndx_pe_rows_rejects_missing_worldperatio_series():
 
 def test_normalize_index_pe_code_accepts_ndx_case_insensitively():
     assert normalize_index_pe_code("ndx") == "NDX"
+
+
+def test_normalize_index_pe_code_accepts_sp500_case_insensitively():
+    assert normalize_index_pe_code("sp500") == "SP500"
 
 
 def test_normalize_index_pe_code_accepts_vn30_case_insensitively():

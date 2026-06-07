@@ -11,6 +11,8 @@ class FakeSQLiteApiClient:
     def post_json(self, path, payload):
         self.calls.append((path, payload))
         response = self.responses.get(path)
+        if isinstance(response, list):
+            response = response.pop(0) if response else None
         if isinstance(response, Exception):
             raise response
         if response is not None:
@@ -44,8 +46,27 @@ def test_repository_initialize_creates_fund_info_schema():
     schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
     assert "CREATE TABLE IF NOT EXISTS daily_metrics" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS fund_info" in schema_sql
+    assert "purchase_limit_amount REAL NOT NULL DEFAULT 0" in schema_sql
     assert "purchase_fee_json TEXT NOT NULL" in schema_sql
     assert "redemption_fee_json TEXT NOT NULL" in schema_sql
+
+
+def test_repository_initialize_adds_purchase_limit_amount_column_to_existing_schema():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/exec": [
+                {"rows_affected": 1, "last_insert_id": 0},
+                {"rows_affected": 1, "last_insert_id": 0},
+                SQLiteApiError(400, "invalid_request", "duplicate column name: purchase_limit_amount"),
+            ]
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    repo.initialize()
+
+    schema_sql = "\n".join(call[1]["sql"] for call in client.calls if call[0] == "/v1/sqlite/exec")
+    assert "ALTER TABLE fund_info ADD COLUMN purchase_limit_amount REAL NOT NULL DEFAULT 0" in schema_sql
 
 
 def test_repository_initialize_treats_existing_database_as_success():
@@ -114,6 +135,7 @@ def test_repository_upserts_fund_info():
             established_date="2023-01-01",
             asset_size="10.25亿元",
             purchase_status="开放申购",
+            purchase_limit_amount=1000.0,
             redemption_status="开放赎回",
             morningstar_rating="5",
             purchase_fee=[
@@ -143,21 +165,47 @@ def test_repository_upserts_fund_info():
     assert payload["db"] == "finance.db"
     assert "INSERT INTO fund_info" in payload["sql"]
     assert "ON CONFLICT(code) DO UPDATE SET" in payload["sql"]
-    assert payload["params"][0:9] == [
+    assert payload["params"][0:10] == [
         "017763",
         "银河领先债券C",
         "债券型",
         "2023-01-01",
         "10.25亿元",
         "开放申购",
+        1000.0,
         "开放赎回",
         "5",
         '[{"min_amount":0,"max_amount":1000000,"original_rate":0.015,"discounted_rate":0.0015}]',
     ]
-    assert payload["params"][9] == (
+    assert payload["params"][10] == (
         '[{"min_holding_days":0,"max_holding_days":7,"original_rate":0.015,"discounted_rate":0.015}]'
     )
-    assert payload["params"][10:12] == ["manual", "2026-06-07T12:00:00+00:00"]
+    assert payload["params"][11:13] == ["manual", "2026-06-07T12:00:00+00:00"]
+
+
+def test_repository_upserts_unlimited_purchase_limit_as_zero():
+    client = FakeSQLiteApiClient()
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    repo.upsert_fund_info(
+        FundInfo(
+            code="017763",
+            name="银河领先债券C",
+            fund_type="债券型",
+            established_date="2023-01-01",
+            asset_size="10.25亿元",
+            purchase_status="开放申购",
+            purchase_limit_amount=None,
+            redemption_status="开放赎回",
+            morningstar_rating="5",
+            purchase_fee=[],
+            redemption_fee=[],
+            source="manual",
+            updated_at="2026-06-07T12:00:00+00:00",
+        )
+    )
+
+    assert client.calls[0][1]["params"][6] == 0
 
 
 def test_repository_deletes_metrics_for_single_series():
@@ -234,6 +282,7 @@ def test_repository_queries_fund_info_by_code():
                     "established_date",
                     "asset_size",
                     "purchase_status",
+                    "purchase_limit_amount",
                     "redemption_status",
                     "morningstar_rating",
                     "purchase_fee_json",
@@ -249,6 +298,7 @@ def test_repository_queries_fund_info_by_code():
                         "2023-01-01",
                         "10.25亿元",
                         "开放申购",
+                        1000.0,
                         "开放赎回",
                         "5",
                         '[{"min_amount":0,"max_amount":1000000,"original_rate":0.015,"discounted_rate":0.0015}]',
@@ -272,6 +322,7 @@ def test_repository_queries_fund_info_by_code():
         established_date="2023-01-01",
         asset_size="10.25亿元",
         purchase_status="开放申购",
+        purchase_limit_amount=1000.0,
         redemption_status="开放赎回",
         morningstar_rating="5",
         purchase_fee=[
@@ -293,8 +344,104 @@ def test_repository_queries_fund_info_by_code():
         source="akshare",
         updated_at="2026-06-07T12:00:00+00:00",
     )
+
+
+def test_repository_queries_unlimited_purchase_limit_as_none():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/query": {
+                "columns": [
+                    "code",
+                    "name",
+                    "fund_type",
+                    "established_date",
+                    "asset_size",
+                    "purchase_status",
+                    "purchase_limit_amount",
+                    "redemption_status",
+                    "morningstar_rating",
+                    "purchase_fee_json",
+                    "redemption_fee_json",
+                    "source",
+                    "updated_at",
+                ],
+                "rows": [
+                    [
+                        "017763",
+                        "银河领先债券C",
+                        "债券型",
+                        "2023-01-01",
+                        "10.25亿元",
+                        "开放申购",
+                        0,
+                        "开放赎回",
+                        "5",
+                        "[]",
+                        "[]",
+                        "akshare",
+                        "2026-06-07T12:00:00+00:00",
+                    ]
+                ],
+                "row_count": 1,
+            }
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    result = repo.fund_info_by_code("017763")
+
+    assert result is not None
+    assert result.purchase_limit_amount is None
+
+
+def test_repository_queries_unavailable_purchase_limit_zero():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/query": {
+                "columns": [
+                    "code",
+                    "name",
+                    "fund_type",
+                    "established_date",
+                    "asset_size",
+                    "purchase_status",
+                    "purchase_limit_amount",
+                    "redemption_status",
+                    "morningstar_rating",
+                    "purchase_fee_json",
+                    "redemption_fee_json",
+                    "source",
+                    "updated_at",
+                ],
+                "rows": [
+                    [
+                        "000032",
+                        "易方达信用债债券A",
+                        "债券型",
+                        "2013-04-24",
+                        "10.25亿元",
+                        "暂停申购",
+                        0,
+                        "开放赎回",
+                        None,
+                        "[]",
+                        "[]",
+                        "akshare",
+                        "2026-06-07T12:00:00+00:00",
+                    ]
+                ],
+                "row_count": 1,
+            }
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    result = repo.fund_info_by_code("000032")
+
+    assert result is not None
+    assert result.purchase_limit_amount == 0
     assert client.calls[0][0] == "/v1/sqlite/query"
-    assert client.calls[0][1]["params"] == ["017763"]
+    assert client.calls[0][1]["params"] == ["000032"]
 
 
 def test_repository_returns_none_for_missing_fund_info():

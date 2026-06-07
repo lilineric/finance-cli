@@ -92,6 +92,7 @@ FUND_INFO_FIELDS = {
     "established_date",
     "asset_size",
     "purchase_status",
+    "purchase_limit_amount",
     "redemption_status",
     "morningstar_rating",
     "purchase_fee",
@@ -231,6 +232,7 @@ def _fund_info_from_payload(code: str, payload: dict[str, object]) -> FundInfo:
         raise JsonClickException("invalid_parameter", "updated_at must be a string", exit_code=2)
     purchase_fee = _validate_fee_list(payload.get("purchase_fee", []), PURCHASE_FEE_FIELDS, "purchase_fee")
     redemption_fee = _validate_fee_list(payload.get("redemption_fee", []), REDEMPTION_FEE_FIELDS, "redemption_fee")
+    purchase_limit_amount = _validate_purchase_limit_amount(payload.get("purchase_limit_amount", 0))
     return FundInfo(
         code=code,
         name=name.strip(),
@@ -238,6 +240,7 @@ def _fund_info_from_payload(code: str, payload: dict[str, object]) -> FundInfo:
         established_date=_optional_payload_str(payload.get("established_date")),
         asset_size=_optional_payload_str(payload.get("asset_size")),
         purchase_status=_optional_payload_str(payload.get("purchase_status")),
+        purchase_limit_amount=purchase_limit_amount,
         redemption_status=_optional_payload_str(payload.get("redemption_status")),
         morningstar_rating=_optional_payload_str(payload.get("morningstar_rating")),
         purchase_fee=purchase_fee,
@@ -265,6 +268,14 @@ def _validate_fee_list(value: object, allowed_fields: set[str], field_name: str)
             _validate_redemption_fee_tier(tier)
         result.append(tier)
     return result
+
+
+def _validate_purchase_limit_amount(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise JsonClickException("invalid_parameter", "purchase_limit_amount must be a number", exit_code=2)
+    return float(value)
 
 
 def _validate_purchase_fee_tier(tier: dict[str, object]) -> None:

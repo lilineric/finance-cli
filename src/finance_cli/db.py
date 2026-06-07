@@ -30,6 +30,7 @@ class FundInfo:
     redemption_fee: list[dict[str, Any]]
     source: str
     updated_at: str
+    purchase_limit_amount: float | None = 0
 
 
 class SQLiteApiError(RuntimeError):
@@ -114,6 +115,7 @@ class MetricsRepository:
                     established_date TEXT,
                     asset_size TEXT,
                     purchase_status TEXT,
+                    purchase_limit_amount REAL NOT NULL DEFAULT 0,
                     redemption_status TEXT,
                     morningstar_rating TEXT,
                     purchase_fee_json TEXT NOT NULL,
@@ -125,6 +127,18 @@ class MetricsRepository:
                 "params": [],
             },
         )
+        try:
+            self.client.post_json(
+                "/v1/sqlite/exec",
+                {
+                    "db": self.db_name,
+                    "sql": "ALTER TABLE fund_info ADD COLUMN purchase_limit_amount REAL NOT NULL DEFAULT 0",
+                    "params": [],
+                },
+            )
+        except SQLiteApiError as exc:
+            if not _is_duplicate_column_error(exc, "purchase_limit_amount"):
+                raise
 
     def upsert_metrics(self, metrics: list[DailyMetric]) -> int:
         if not metrics:
@@ -249,6 +263,7 @@ class MetricsRepository:
                     established_date,
                     asset_size,
                     purchase_status,
+                    purchase_limit_amount,
                     redemption_status,
                     morningstar_rating,
                     purchase_fee_json,
@@ -256,13 +271,14 @@ class MetricsRepository:
                     source,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(code) DO UPDATE SET
                     name = excluded.name,
                     fund_type = excluded.fund_type,
                     established_date = excluded.established_date,
                     asset_size = excluded.asset_size,
                     purchase_status = excluded.purchase_status,
+                    purchase_limit_amount = excluded.purchase_limit_amount,
                     redemption_status = excluded.redemption_status,
                     morningstar_rating = excluded.morningstar_rating,
                     purchase_fee_json = excluded.purchase_fee_json,
@@ -277,6 +293,7 @@ class MetricsRepository:
                     fund_info.established_date,
                     fund_info.asset_size,
                     fund_info.purchase_status,
+                    _stored_purchase_limit_amount(fund_info.purchase_limit_amount),
                     fund_info.redemption_status,
                     fund_info.morningstar_rating,
                     _compact_json(fund_info.purchase_fee),
@@ -301,6 +318,7 @@ class MetricsRepository:
                     established_date,
                     asset_size,
                     purchase_status,
+                    purchase_limit_amount,
                     redemption_status,
                     morningstar_rating,
                     purchase_fee_json,
@@ -327,6 +345,10 @@ class MetricsRepository:
             established_date=_optional_str(row["established_date"]),
             asset_size=_optional_str(row["asset_size"]),
             purchase_status=_optional_str(row["purchase_status"]),
+            purchase_limit_amount=_purchase_limit_amount_from_stored_value(
+                row["purchase_status"],
+                row["purchase_limit_amount"],
+            ),
             redemption_status=_optional_str(row["redemption_status"]),
             morningstar_rating=_optional_str(row["morningstar_rating"]),
             purchase_fee=_decode_json_list(row["purchase_fee_json"]),
@@ -359,6 +381,17 @@ def _optional_str(value: Any) -> str | None:
     return str(value)
 
 
+def _stored_purchase_limit_amount(value: float | None) -> float:
+    return 0 if value is None else value
+
+
+def _purchase_limit_amount_from_stored_value(purchase_status: Any, value: Any) -> float | None:
+    amount = float(value)
+    if _optional_str(purchase_status) == "开放申购" and amount == 0:
+        return None
+    return amount
+
+
 def _api_error_from_http_error(exc: HTTPError) -> SQLiteApiError:
     try:
         payload = _decode_json_response(exc.read())
@@ -369,6 +402,11 @@ def _api_error_from_http_error(exc: HTTPError) -> SQLiteApiError:
         code = "http_error"
         message = str(exc.reason)
     return SQLiteApiError(exc.code, code, message)
+
+
+def _is_duplicate_column_error(exc: SQLiteApiError, column_name: str) -> bool:
+    message = exc.message.lower()
+    return "duplicate column" in message and column_name.lower() in message
 
 
 def _chunks(metrics: list[DailyMetric], size: int) -> list[list[DailyMetric]]:

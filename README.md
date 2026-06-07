@@ -17,11 +17,13 @@ finance pe --code 000300 --date 2026-04-20 --years 10
 finance pe --code H30269 --years 10
 finance pe --code 990001 --years 10
 finance pe --code NDX --years 10
+finance pe --code SP500 --years 10
 finance pe --code VN30 --years 10
 ```
 
 Rolling PE uses the CSIndex historical `滚动市盈率` field and is stored as `rolling_pe`.
 `NDX` uses Danjuan's historical valuation API and is also stored as `rolling_pe`.
+`SP500` uses Danjuan's historical valuation API and is also stored as `rolling_pe`.
 `VN30` uses WorldPEratio monthly historical P/E data and is also stored as `rolling_pe`; `VN30` is based on WorldPEratio's Vietnam market series.
 
 Query index dividend-yield value:
@@ -84,6 +86,7 @@ decimal values where `0.015` means `1.5%`.
   "established_date": "2023-01-01",
   "asset_size": "10.25亿元",
   "purchase_status": "开放申购",
+  "purchase_limit_amount": null,
   "redemption_status": "开放赎回",
   "morningstar_rating": "5",
   "purchase_fee": [

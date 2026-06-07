@@ -76,6 +76,7 @@ def format_fund_info_json(result: FundInfo) -> str:
             "established_date": result.established_date,
             "asset_size": result.asset_size,
             "purchase_status": result.purchase_status,
+            "purchase_limit_amount": result.purchase_limit_amount,
             "redemption_status": result.redemption_status,
             "morningstar_rating": result.morningstar_rating,
             "purchase_fee": result.purchase_fee,
@@ -94,13 +95,17 @@ def format_fund_info_text(result: FundInfo) -> str:
         f"基金类型: {_display_value(result.fund_type)}",
         f"成立日期: {_display_value(result.established_date)}",
         f"资产规模: {_display_value(result.asset_size)}",
-        f"申购状态: {_display_value(result.purchase_status)}",
-        f"赎回状态: {_display_value(result.redemption_status)}",
-        f"晨星评级: {_display_value(result.morningstar_rating)}",
-        f"数据源: {result.source}",
-        f"更新时间: {result.updated_at}",
-        "申购费率:",
+        f"申购状态: {_purchase_status_text(result)}",
     ]
+    lines.extend(
+        [
+            f"赎回状态: {_display_value(result.redemption_status)}",
+            f"晨星评级: {_display_value(result.morningstar_rating)}",
+            f"数据源: {result.source}",
+            f"更新时间: {result.updated_at}",
+            "申购费率:",
+        ]
+    )
     lines.extend(_purchase_fee_lines(result.purchase_fee))
     lines.append("赎回费率:")
     lines.extend(_redemption_fee_lines(result.redemption_fee))
@@ -149,6 +154,13 @@ def _redemption_fee_lines(fee_tiers: list[dict[str, object]]) -> list[str]:
     return [_format_redemption_fee_tier(tier) for tier in fee_tiers]
 
 
+def _purchase_status_text(result: FundInfo) -> str:
+    status = _display_value(result.purchase_status)
+    if result.purchase_limit_amount is not None and result.purchase_limit_amount > 0:
+        return f"{status}（日累计限定金额 {_format_amount(result.purchase_limit_amount)}元）"
+    return status
+
+
 def _format_purchase_fee_tier(tier: dict[str, object]) -> str:
     min_amount = tier["min_amount"]
     max_amount = tier.get("max_amount")
@@ -184,6 +196,10 @@ def _format_rate(value: object) -> str:
         return "未知"
     percentage = float(value) * 100
     return f"{percentage:g}%"
+
+
+def _format_amount(value: object) -> str:
+    return f"{float(value):g}"
 
 
 def _asset_label(asset_type: str) -> str:

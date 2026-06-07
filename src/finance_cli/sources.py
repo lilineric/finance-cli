@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
+from io import StringIO
 import json
 from numbers import Integral, Real
 import re
@@ -36,7 +37,8 @@ FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
 CSINDEX_HISTORY_START_DATE = "19900101"
 _AKSHARE_PE_INDEX_CODES: frozenset[str] = frozenset({"930707", "990001", "930713"})
-DANJUAN_NDX_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/NDX?day=all"
+DANJUAN_GLOBAL_PE_INDEX_CODES: frozenset[str] = frozenset({"NDX", "SP500"})
+DANJUAN_GLOBAL_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 DANJUAN_CSI_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
 WORLDPERATIO_PE_BLOCK_PATTERN = re.compile(r"detailPE_data\s*=\s*(\[.*?\]);", re.DOTALL)
@@ -54,20 +56,26 @@ FUND_NAV_TYPES = {
     "unit": ("unit_nav", "单位净值走势"),
     "accumulated": ("accumulated_nav", "累计净值走势"),
 }
+FUND_FEE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
 FUND_BASIC_KEY_COLUMNS = ("item", "项目", "字段", "名称")
 FUND_BASIC_VALUE_COLUMNS = ("value", "内容", "值")
 FUND_CODE_COLUMNS = ("基金代码", "代码", "fund_code", "code")
 FUND_NAME_KEYS = ("基金名称", "name")
 FUND_TYPE_KEYS = ("基金类型", "类型", "fund_type")
-FUND_ESTABLISHED_DATE_KEYS = ("成立日期", "established_date")
-FUND_ASSET_SIZE_KEYS = ("资产规模", "asset_size")
+FUND_ESTABLISHED_DATE_KEYS = ("成立日期", "成立时间", "established_date")
+FUND_ASSET_SIZE_KEYS = ("资产规模", "最新规模", "asset_size")
 FUND_PURCHASE_STATUS_COLUMNS = ("申购状态", "purchase_status")
+FUND_DAILY_PURCHASE_LIMIT_COLUMNS = ("日累计限定金额", "daily_purchase_limit", "purchase_limit")
 FUND_REDEMPTION_STATUS_COLUMNS = ("赎回状态", "redemption_status")
 FUND_RATING_COLUMNS = ("晨星评级", "晨星评级(三年)", "morningstar_rating")
 PURCHASE_AMOUNT_COLUMNS = ("适用金额", "金额", "amount_range")
 PURCHASE_ORIGINAL_RATE_COLUMNS = ("原费率", "费率", "original_rate")
 PURCHASE_DISCOUNTED_RATE_COLUMNS = ("天天基金优惠费率", "优惠费率", "discounted_rate")
-REDEMPTION_HOLDING_COLUMNS = ("持有期限", "持有时间", "holding_period")
+PURCHASE_COMBINED_RATE_COLUMNS = (
+    "原费率|天天基金优惠费率",
+    "原费率|天天基金优惠费率 银行卡购买|活期宝购买",
+)
+REDEMPTION_HOLDING_COLUMNS = ("持有期限", "持有时间", "适用期限", "holding_period")
 REDEMPTION_RATE_COLUMNS = ("赎回费率", "费率", "redemption_rate")
 FED_H6_MONTHLY_URL = (
     "https://www.federalreserve.gov/datadownload/Output.aspx"
@@ -118,9 +126,10 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
             raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
         return normalize_index_pe_rows(normalized_code, frame)
 
-    if normalized_code == "NDX":
+    if normalized_code in DANJUAN_GLOBAL_PE_INDEX_CODES:
+        url = DANJUAN_GLOBAL_PE_URL.format(code=normalized_code)
         try:
-            text = fetcher() if fetcher is not None else _fetch_text(DANJUAN_NDX_PE_URL)
+            text = fetcher() if fetcher is not None else _fetch_text(url)
         except Exception as exc:
             raise DataSourceError(f"Failed to fetch index PE rows for {code}: {exc}") from exc
         return normalize_danjuan_index_pe_rows(normalized_code, text)
@@ -206,7 +215,7 @@ def normalize_csi_index_pb_code(code: str) -> str:
 
 def normalize_index_pe_code(code: str) -> str:
     normalized = code.strip().upper()
-    if normalized == "NDX" or normalized in WORLDPERATIO_PE_URLS:
+    if normalized in DANJUAN_GLOBAL_PE_INDEX_CODES or normalized in WORLDPERATIO_PE_URLS:
         return normalized
     return normalize_csindex_code(code)
 
@@ -286,6 +295,7 @@ def fetch_fund_info(
     basic_fetcher: Callable[..., pd.DataFrame] | None = None,
     purchase_fetcher: Callable[..., pd.DataFrame] | None = None,
     fee_fetcher: Callable[..., pd.DataFrame] | None = None,
+    fee_page_fetcher: Callable[[str], str] | None = None,
     rating_fetcher: Callable[..., pd.DataFrame] | None = None,
     clock: Callable[[], str] | None = None,
 ) -> FundInfo:
@@ -318,6 +328,14 @@ def fetch_fund_info(
         purchase_fee_frame = fee_fetcher(symbol=normalized_code, indicator="申购费率（前端）")
     except Exception:
         purchase_fee_frame = pd.DataFrame()
+    if purchase_fee_frame.empty:
+        try:
+            page_fetcher = fee_page_fetcher or _fetch_text
+            purchase_fee_frame = _purchase_fee_frame_from_eastmoney_html(
+                page_fetcher(FUND_FEE_URL.format(code=normalized_code))
+            )
+        except Exception:
+            purchase_fee_frame = pd.DataFrame()
 
     try:
         redemption_fee_frame = fee_fetcher(symbol=normalized_code, indicator="赎回费率")
@@ -644,13 +662,20 @@ def normalize_purchase_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
     if frame.empty:
         return []
     amount_column = _first_existing_column(frame, PURCHASE_AMOUNT_COLUMNS)
-    original_rate_column = _first_existing_column(frame, PURCHASE_ORIGINAL_RATE_COLUMNS)
-    discounted_rate_column = _first_existing_column(frame, PURCHASE_DISCOUNTED_RATE_COLUMNS)
+    combined_rate_column = _optional_existing_column(frame, PURCHASE_COMBINED_RATE_COLUMNS)
+    if combined_rate_column is None:
+        original_rate_column = _first_existing_column(frame, PURCHASE_ORIGINAL_RATE_COLUMNS)
+        discounted_rate_column = _optional_existing_column(frame, PURCHASE_DISCOUNTED_RATE_COLUMNS) or original_rate_column
+    else:
+        original_rate_column = combined_rate_column
+        discounted_rate_column = combined_rate_column
     tiers = []
     for _, row in frame.iterrows():
         amount_text = str(row[amount_column]).strip()
         original_text = str(row[original_rate_column]).strip()
         discounted_text = str(row[discounted_rate_column]).strip()
+        if combined_rate_column is not None:
+            original_text, discounted_text = _split_combined_purchase_rate(original_text)
         try:
             tier = _parse_amount_range(amount_text)
             fee_value = _parse_purchase_fee_value(original_text, discounted_text)
@@ -707,6 +732,7 @@ def normalize_fund_info(
         established_date=_first_mapping_value(basic, FUND_ESTABLISHED_DATE_KEYS),
         asset_size=_first_mapping_value(basic, FUND_ASSET_SIZE_KEYS),
         purchase_status=_first_row_value(status_row, FUND_PURCHASE_STATUS_COLUMNS),
+        purchase_limit_amount=_purchase_limit_amount_from_status_row(status_row),
         redemption_status=_first_row_value(status_row, FUND_REDEMPTION_STATUS_COLUMNS),
         morningstar_rating=_first_row_value(rating_row, FUND_RATING_COLUMNS),
         purchase_fee=normalize_purchase_fee_rows(purchase_fee_frame),
@@ -714,6 +740,20 @@ def normalize_fund_info(
         source="akshare",
         updated_at=updated_at,
     )
+
+
+def _purchase_fee_frame_from_eastmoney_html(html: str) -> pd.DataFrame:
+    section = _html_section_after_title(html, "申购费率")
+    if section is None:
+        return pd.DataFrame()
+    tables = pd.read_html(StringIO(section))
+    return tables[0] if tables else pd.DataFrame()
+
+
+def _html_section_after_title(html: str, title: str) -> str | None:
+    pattern = re.compile(rf"<h4[^>]*>.*?{re.escape(title)}.*?</h4>(.*?)(?=<h4[^>]*>|\Z)", re.DOTALL)
+    match = pattern.search(html)
+    return None if match is None else match.group(1)
 
 
 def _fund_basic_mapping(frame: pd.DataFrame) -> dict[str, str]:
@@ -754,12 +794,37 @@ def _first_row_value(row: pd.Series | None, columns: tuple[str, ...]) -> str | N
     return None
 
 
+def _purchase_limit_amount_from_status_row(row: pd.Series | None) -> float | None:
+    if row is None:
+        return 0
+    status = _first_row_value(row, FUND_PURCHASE_STATUS_COLUMNS)
+    if status == "开放申购":
+        return None
+    if status is None or "限" not in status or "无限" in status:
+        return 0
+    for column in FUND_DAILY_PURCHASE_LIMIT_COLUMNS:
+        if column in row.index and not _is_missing(row[column]):
+            amount = _to_float(row[column])
+            return 0 if amount >= 100000000000 else amount
+    return 0
+
+
 def _parse_amount_range(text: str) -> dict[str, int | None]:
     normalized = text.replace(",", "").replace("，", "").replace(" ", "")
+    if normalized in {"---", "--", "-"}:
+        return {"min_amount": 0, "max_amount": None}
     if match := re.fullmatch(r"(?:小于|少于|低于)(\d+(?:\.\d+)?)(万)?元?", normalized):
         return {"min_amount": 0, "max_amount": _amount_to_yuan(match.group(1), match.group(2))}
     if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+(?:\.\d+)?)(万)?元?", normalized):
         return {"min_amount": _amount_to_yuan(match.group(1), match.group(2)), "max_amount": None}
+    if match := re.fullmatch(
+        r"(?:大于等于|不少于|>=)(\d+(?:\.\d+)?)(万)?元?(?:小于|少于|低于)(\d+(?:\.\d+)?)(万)?元?",
+        normalized,
+    ):
+        return {
+            "min_amount": _amount_to_yuan(match.group(1), match.group(2)),
+            "max_amount": _amount_to_yuan(match.group(3), match.group(4)),
+        }
     if match := re.fullmatch(
         r"(\d+(?:\.\d+)?)(万)?元?(?:<=|≤)(?:申购金额|金额)<(\d+(?:\.\d+)?)(万)?元?",
         normalized,
@@ -773,12 +838,18 @@ def _parse_amount_range(text: str) -> dict[str, int | None]:
 
 def _parse_holding_period_range(text: str) -> dict[str, int | None]:
     normalized = text.replace(" ", "")
+    if match := re.fullmatch(r"(?:小于等于|<=|≤)(\d+)天", normalized):
+        return {"min_holding_days": 0, "max_holding_days": int(match.group(1)) + 1}
     if match := re.fullmatch(r"(?:小于|少于|低于)(\d+)天", normalized):
         return {"min_holding_days": 0, "max_holding_days": int(match.group(1))}
     if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天", normalized):
         return {"min_holding_days": int(match.group(1)), "max_holding_days": None}
     if match := re.fullmatch(r"(\d+)天(?:<=|≤)(?:持有期限|持有时间)<(\d+)天", normalized):
         return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2))}
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天[，,](?:小于|少于|低于)(\d+)天", normalized):
+        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2))}
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天[，,](?:小于等于|<=|≤)(\d+)天", normalized):
+        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2)) + 1}
     if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)年", normalized):
         return {"min_holding_days": int(match.group(1)) * 365, "max_holding_days": None}
     raise DataSourceError(f"Unparseable holding period: {text}")
@@ -798,6 +869,13 @@ def _parse_purchase_fee_value(original_text: str, discounted_text: str) -> dict[
     }
 
 
+def _split_combined_purchase_rate(text: str) -> tuple[str, str]:
+    parts = [part.strip() for part in text.replace("\xa0", " ").split("|")]
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    return parts[0], parts[1]
+
+
 def _parse_rate(text: str) -> float:
     normalized = text.strip()
     if normalized in {"0", "0.00%", "免费"}:
@@ -809,6 +887,8 @@ def _parse_rate(text: str) -> float:
 
 def _parse_fixed_fee(text: str) -> int | None:
     normalized = text.strip()
+    if match := re.fullmatch(r"每笔(\d+)元", normalized):
+        return int(match.group(1))
     if match := re.fullmatch(r"(\d+)元(?:/笔)?", normalized):
         return int(match.group(1))
     return None
@@ -842,6 +922,13 @@ def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> 
             return column
 
     raise DataSourceError(f"Missing expected columns: {', '.join(candidates)}")
+
+
+def _optional_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    for column in candidates:
+        if column in frame.columns:
+            return column
+    return None
 
 
 def _to_iso_date(value: object) -> str:

@@ -147,6 +147,7 @@ def test_format_fund_info_json_outputs_expected_payload():
         ],
         source="akshare",
         updated_at="2026-06-07T12:00:00+00:00",
+        purchase_limit_amount=1000.0,
     )
 
     payload = json.loads(format_fund_info_json(fund_info))
@@ -155,6 +156,7 @@ def test_format_fund_info_json_outputs_expected_payload():
     assert payload["name"] == "银河领先债券C"
     assert payload["purchase_fee"][0]["discounted_rate"] == 0.0015
     assert payload["redemption_fee"][0]["max_holding_days"] is None
+    assert payload["purchase_limit_amount"] == 1000.0
     assert payload["source"] == "akshare"
 
 
@@ -205,6 +207,97 @@ def test_format_fund_info_text_outputs_chinese_labels_and_fee_tiers():
     assert "amount >= 1000000: 固定费用 1000元" in text
     assert "赎回费率:" in text
     assert "0 <= days < 7: 原费率 1.5%, 折扣后费率 1.5%" in text
+
+
+def test_format_fund_info_text_outputs_purchase_limit_detail():
+    fund_info = FundInfo(
+        code="017436",
+        name="华宝纳斯达克精选股票发起式(QDII)A",
+        fund_type="QDII-股票",
+        established_date="2023-03-02",
+        asset_size="39.51亿",
+        purchase_status="限大额",
+        redemption_status="开放赎回",
+        morningstar_rating="4.0",
+        purchase_fee=[],
+        redemption_fee=[],
+        source="akshare",
+        updated_at="2026-06-07T03:13:07.136543+00:00",
+        purchase_limit_amount=1000.0,
+    )
+
+    text = format_fund_info_text(fund_info)
+
+    assert "申购状态: 限大额（日累计限定金额 1000元）" in text
+    assert "申购限额:" not in text
+
+
+def test_format_fund_info_text_omits_purchase_limit_when_unlimited():
+    fund_info = FundInfo(
+        code="017763",
+        name="银河领先债券C",
+        fund_type="债券型",
+        established_date="2023-01-01",
+        asset_size="10.25亿元",
+        purchase_status="开放申购",
+        redemption_status="开放赎回",
+        morningstar_rating="5",
+        purchase_fee=[],
+        redemption_fee=[],
+        source="akshare",
+        updated_at="2026-06-07T12:00:00+00:00",
+        purchase_limit_amount=None,
+    )
+
+    text = format_fund_info_text(fund_info)
+
+    assert "申购状态: 开放申购" in text
+    assert "日累计限定金额" not in text
+
+
+def test_format_fund_info_json_outputs_null_purchase_limit_when_unlimited():
+    fund_info = FundInfo(
+        code="017763",
+        name="银河领先债券C",
+        fund_type="债券型",
+        established_date="2023-01-01",
+        asset_size="10.25亿元",
+        purchase_status="开放申购",
+        redemption_status="开放赎回",
+        morningstar_rating="5",
+        purchase_fee=[],
+        redemption_fee=[],
+        source="akshare",
+        updated_at="2026-06-07T12:00:00+00:00",
+        purchase_limit_amount=None,
+    )
+
+    payload = json.loads(format_fund_info_json(fund_info))
+
+    assert payload["purchase_limit_amount"] is None
+
+
+def test_format_fund_info_text_omits_purchase_limit_when_buying_unavailable():
+    fund_info = FundInfo(
+        code="000032",
+        name="易方达信用债债券A",
+        fund_type="债券型",
+        established_date="2013-04-24",
+        asset_size="10.25亿元",
+        purchase_status="暂停申购",
+        redemption_status="开放赎回",
+        morningstar_rating=None,
+        purchase_fee=[],
+        redemption_fee=[],
+        source="akshare",
+        updated_at="2026-06-07T12:00:00+00:00",
+        purchase_limit_amount=0,
+    )
+
+    text = format_fund_info_text(fund_info)
+
+    assert "申购状态: 暂停申购" in text
+    assert "日累计限定金额" not in text
 
 
 def test_format_output_omits_percentile_when_unavailable():

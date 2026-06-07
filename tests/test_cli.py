@@ -19,6 +19,7 @@ def _fund_info_payload():
         "established_date": "2023-01-01",
         "asset_size": "10.25亿元",
         "purchase_status": "开放申购",
+        "purchase_limit_amount": 1000.0,
         "redemption_status": "开放赎回",
         "morningstar_rating": "5",
         "purchase_fee": [
@@ -176,6 +177,45 @@ def test_pe_command_accepts_ndx(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert seen["code"] == "NDX"
+
+
+def test_pe_command_accepts_sp500(monkeypatch, tmp_path):
+    seen = {}
+
+    def query(
+        self,
+        asset_type,
+        code,
+        metric,
+        requested_date,
+        years,
+        fetch_missing,
+        ensure_lookback_coverage=False,
+        minimum_lookback_years=None,
+    ):
+        assert ensure_lookback_coverage is True
+        assert minimum_lookback_years == 3
+        seen["code"] = code
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-06-05",
+            "2016-06-06",
+            28.2749,
+            65.0,
+            522,
+            "danjuan",
+            years,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["pe", "--code", "sp500", "--json"])
+
+    assert result.exit_code == 0
+    assert seen["code"] == "SP500"
 
 
 def test_pe_command_accepts_vn30(monkeypatch, tmp_path):
@@ -506,6 +546,7 @@ def test_fund_info_update_accepts_inline_json(monkeypatch):
 
     assert result.exit_code == 0
     assert seen["fund_info"].code == "017763"
+    assert seen["fund_info"].purchase_limit_amount == 1000.0
     assert seen["fund_info"].source == "manual"
     payload = json.loads(result.output)
     assert payload["name"] == "银河领先债券C"
@@ -529,6 +570,26 @@ def test_fund_info_update_accepts_json_file(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert seen["fund_info"].code == "017763"
+
+
+def test_fund_info_update_accepts_null_purchase_limit_amount(monkeypatch):
+    seen = {}
+    payload = _fund_info_payload()
+    payload["purchase_limit_amount"] = None
+
+    def update_fund_info(self, fund_info):
+        seen["fund_info"] = fund_info
+        return fund_info
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.update_fund_info", update_fund_info)
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen["fund_info"].purchase_limit_amount is None
 
 
 def test_fund_info_update_rejects_data_and_data_file_conflict(tmp_path):
@@ -626,6 +687,21 @@ def test_fund_info_update_rejects_invalid_fee_tier_shape():
     error = json.loads(result.output)["error"]
     assert error["code"] == "invalid_parameter"
     assert "purchase_fee min_amount must be a number" in error["message"]
+
+
+def test_fund_info_update_rejects_invalid_purchase_limit_amount():
+    payload = _fund_info_payload()
+    payload["purchase_limit_amount"] = "1000"
+
+    result = runner.invoke(
+        app,
+        ["fund-info-update", "--code", "017763", "--data", json.dumps(payload), "--json"],
+    )
+
+    assert result.exit_code != 0
+    error = json.loads(result.output)["error"]
+    assert error["code"] == "invalid_parameter"
+    assert "purchase_limit_amount must be a number" in error["message"]
 
 
 def test_fund_nav_help_describes_nav_type_values():
@@ -857,6 +933,35 @@ def test_sync_pe_accepts_ndx(monkeypatch, tmp_path):
     assert seen["sync_code"] == "NDX"
     assert seen["metric"] == "rolling_pe"
     assert seen["code"] == "NDX"
+    assert seen["rows"] == []
+    assert "同步 3 条记录" in result.output
+
+
+def test_sync_pe_accepts_sp500(monkeypatch, tmp_path):
+    seen = {}
+
+    def replace_sync(self, asset_type, code, metric, fetch_rows):
+        rows = list(fetch_rows())
+        seen["asset_type"] = asset_type
+        seen["sync_code"] = code
+        seen["metric"] = metric
+        seen["rows"] = rows
+        return 3
+
+    def fetch_index_pe_rows(code):
+        seen["code"] = code
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.replace_sync", replace_sync)
+    monkeypatch.setattr("finance_cli.cli.fetch_index_pe_rows", fetch_index_pe_rows)
+
+    result = runner.invoke(app, ["sync", "pe", "--code", "sp500"])
+
+    assert result.exit_code == 0
+    assert seen["asset_type"] == "index"
+    assert seen["sync_code"] == "SP500"
+    assert seen["metric"] == "rolling_pe"
+    assert seen["code"] == "SP500"
     assert seen["rows"] == []
     assert "同步 3 条记录" in result.output
 
