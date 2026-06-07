@@ -796,14 +796,24 @@ def _operation_fee_from_eastmoney_html(html: str) -> OperationFee:
         return OperationFee(
             management_fee=_fee_value_after_label(values, FUND_MANAGEMENT_FEE_KEYS),
             custodian_fee=_fee_value_after_label(values, FUND_CUSTODIAN_FEE_KEYS),
-            sales_service_fee=_fee_value_after_label(values, FUND_SALES_SERVICE_FEE_KEYS),
+            sales_service_fee=_fee_value_after_label(
+                values,
+                FUND_SALES_SERVICE_FEE_KEYS,
+                missing_as_zero=True,
+            ),
         )
     return OperationFee()
 
 
-def _fee_value_after_label(values: list[str], labels: tuple[str, ...]) -> float | None:
+def _fee_value_after_label(
+    values: list[str],
+    labels: tuple[str, ...],
+    missing_as_zero: bool = False,
+) -> float | None:
     for index, value in enumerate(values[:-1]):
         if value in labels and values[index + 1]:
+            if missing_as_zero and values[index + 1].strip() in {"---", "--", "-"}:
+                return 0
             try:
                 return _parse_rate(values[index + 1])
             except DataSourceError:

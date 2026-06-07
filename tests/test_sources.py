@@ -36,6 +36,7 @@ from finance_cli.sources import (
     normalize_worldperatio_pe_rows,
     normalize_sw_index_pb_rows,
     _fetch_text,
+    _operation_fee_from_eastmoney_html,
     _to_danjuan_index_code,
 )
 from finance_cli.db import DailyMetric, OperationFee
@@ -689,6 +690,26 @@ def test_fetch_fund_info_falls_back_to_eastmoney_purchase_fee_table():
         ("fee_page", "https://fundf10.eastmoney.com/jjfl_017436.html"),
         ("fee", "017436", "赎回费率"),
     ]
+
+
+def test_operation_fee_from_eastmoney_html_treats_missing_sales_service_fee_as_zero():
+    html = """
+    <html><body>
+    <h4 class="t"><label class="left">运作费用</label><label class="right"></label></h4>
+    <table>
+      <tr><td>管理费率</td><td>0.80%（每年）</td><td>托管费率</td><td>0.20%（每年）</td><td>销售服务费率</td><td>---</td></tr>
+    </table>
+    </body></html>
+    """
+
+    result = _operation_fee_from_eastmoney_html(html)
+
+    assert result == OperationFee(
+        management_fee=0.008,
+        custodian_fee=0.002,
+        sales_service_fee=0.0,
+    )
+    assert result.total == 0.01
 
 
 @pytest.mark.parametrize("date_value", [None, pd.NA, "", float("nan")])
