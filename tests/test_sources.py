@@ -329,6 +329,44 @@ def test_normalize_redemption_fee_rows_accepts_less_than_or_equal_ranges():
     ]
 
 
+def test_normalize_redemption_fee_rows_accepts_year_ranges():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["小于7天", "大于等于7天，小于1年", "大于等于1年，小于2年", "大于等于2年"],
+            "赎回费率": ["1.50%", "0.20%", "0.05%", "0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": 7,
+            "original_rate": 0.015,
+            "discounted_rate": 0.015,
+        },
+        {
+            "min_holding_days": 7,
+            "max_holding_days": 365,
+            "original_rate": 0.002,
+            "discounted_rate": 0.002,
+        },
+        {
+            "min_holding_days": 365,
+            "max_holding_days": 730,
+            "original_rate": 0.0005,
+            "discounted_rate": 0.0005,
+        },
+        {
+            "min_holding_days": 730,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        },
+    ]
+
+
 def test_normalize_purchase_fee_rows_rejects_unparseable_tier():
     frame = pd.DataFrame(
         {

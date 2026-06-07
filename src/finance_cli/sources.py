@@ -838,20 +838,45 @@ def _parse_amount_range(text: str) -> dict[str, int | None]:
 
 def _parse_holding_period_range(text: str) -> dict[str, int | None]:
     normalized = text.replace(" ", "")
-    if match := re.fullmatch(r"(?:小于等于|<=|≤)(\d+)天", normalized):
-        return {"min_holding_days": 0, "max_holding_days": int(match.group(1)) + 1}
-    if match := re.fullmatch(r"(?:小于|少于|低于)(\d+)天", normalized):
-        return {"min_holding_days": 0, "max_holding_days": int(match.group(1))}
-    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天", normalized):
-        return {"min_holding_days": int(match.group(1)), "max_holding_days": None}
-    if match := re.fullmatch(r"(\d+)天(?:<=|≤)(?:持有期限|持有时间)<(\d+)天", normalized):
-        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2))}
-    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天[，,](?:小于|少于|低于)(\d+)天", normalized):
-        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2))}
-    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)天[，,](?:小于等于|<=|≤)(\d+)天", normalized):
-        return {"min_holding_days": int(match.group(1)), "max_holding_days": int(match.group(2)) + 1}
-    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)年", normalized):
-        return {"min_holding_days": int(match.group(1)) * 365, "max_holding_days": None}
+    if match := re.fullmatch(r"(?:小于等于|<=|≤)(\d+)(天|年)", normalized):
+        return {
+            "min_holding_days": 0,
+            "max_holding_days": _holding_period_to_days(match.group(1), match.group(2)) + 1,
+        }
+    if match := re.fullmatch(r"(?:小于|少于|低于)(\d+)(天|年)", normalized):
+        return {
+            "min_holding_days": 0,
+            "max_holding_days": _holding_period_to_days(match.group(1), match.group(2)),
+        }
+    if match := re.fullmatch(r"(?:大于等于|不少于|>=)(\d+)(天|年)", normalized):
+        return {
+            "min_holding_days": _holding_period_to_days(match.group(1), match.group(2)),
+            "max_holding_days": None,
+        }
+    if match := re.fullmatch(
+        r"(\d+)(天|年)(?:<=|≤)(?:持有期限|持有时间)<(\d+)(天|年)",
+        normalized,
+    ):
+        return {
+            "min_holding_days": _holding_period_to_days(match.group(1), match.group(2)),
+            "max_holding_days": _holding_period_to_days(match.group(3), match.group(4)),
+        }
+    if match := re.fullmatch(
+        r"(?:大于等于|不少于|>=)(\d+)(天|年)[，,](?:小于|少于|低于)(\d+)(天|年)",
+        normalized,
+    ):
+        return {
+            "min_holding_days": _holding_period_to_days(match.group(1), match.group(2)),
+            "max_holding_days": _holding_period_to_days(match.group(3), match.group(4)),
+        }
+    if match := re.fullmatch(
+        r"(?:大于等于|不少于|>=)(\d+)(天|年)[，,](?:小于等于|<=|≤)(\d+)(天|年)",
+        normalized,
+    ):
+        return {
+            "min_holding_days": _holding_period_to_days(match.group(1), match.group(2)),
+            "max_holding_days": _holding_period_to_days(match.group(3), match.group(4)) + 1,
+        }
     raise DataSourceError(f"Unparseable holding period: {text}")
 
 
@@ -899,6 +924,13 @@ def _amount_to_yuan(number_text: str, unit: str | None) -> int:
     if unit == "万":
         value *= 10000
     return int(value)
+
+
+def _holding_period_to_days(number_text: str, unit: str) -> int:
+    days = int(number_text)
+    if unit == "年":
+        return days * 365
+    return days
 
 
 def _fund_nav_type_settings(nav_type: str) -> tuple[str, str]:
