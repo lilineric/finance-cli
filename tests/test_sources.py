@@ -36,6 +36,7 @@ from finance_cli.sources import (
     normalize_worldperatio_pe_rows,
     normalize_sw_index_pb_rows,
     _fetch_text,
+    _fund_basic_frame_from_eastmoney_html,
     _operation_fee_from_eastmoney_html,
     _to_danjuan_index_code,
 )
@@ -265,6 +266,93 @@ def test_normalize_redemption_fee_rows_parses_flat_zero_fee_row():
         {
             "适用期限": ["---"],
             "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
+def test_normalize_redemption_fee_rows_parses_usual_no_fee_text():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["在通常情况下不收取赎回费用"],
+            "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
+def test_normalize_redemption_fee_rows_parses_general_no_fee_text():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["一般情况下,不收取赎回费"],
+            "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
+def test_normalize_redemption_fee_rows_parses_no_purchase_or_redemption_fee_text():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["本基金通常不收取申购费用和赎回费用"],
+            "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
+def test_normalize_redemption_fee_rows_skips_conditional_forced_fee_text():
+    frame = pd.DataFrame(
+        {
+            "适用期限": [
+                "在通常情况下不收取赎回费用",
+                "在满足相关流动性风险管理要求的前提下,当本基金持有的现金、国债、中央银行票据、"
+                "政策性金融债券以及5个交易日内到期的其他金融工具占基金资产净值的比例合计低于5%"
+                "且偏离度为负时,为确保基金平稳运作,避免诱发系统性风险,基金管理人应当对当日单个"
+                "基金份额持有人申请赎回基金份额超过基金总份额1%以上的赎回申请征收1%的强制赎回费用,"
+                "并将上述赎回费用全额计入基金财产。",
+            ],
+            "赎回费率": ["0.00%", "1.00%"],
         }
     )
 
@@ -709,6 +797,85 @@ def test_fetch_fund_info_falls_back_to_eastmoney_purchase_fee_table():
         ("fee", "017436", "申购费率（前端）"),
         ("fee_page", "https://fundf10.eastmoney.com/jjfl_017436.html"),
         ("fee", "017436", "赎回费率"),
+    ]
+
+
+def test_fund_basic_frame_from_eastmoney_html_parses_profile_table():
+    html = """
+    <html><body>
+    <table>
+      <tr><th>基金全称</th><td>百嘉中证同业存单AAA指数7天持有期证券投资基金</td><th>基金简称</th><td>百嘉中证同业存单AAA指数7天持有</td></tr>
+      <tr><th>基金代码</th><td>017725（前端）</td><th>基金类型</th><td>指数型-固收</td></tr>
+      <tr><th>发行日期</th><td>2023年03月01日</td><th>成立日期/规模</th><td>2023年03月16日 / 11.957亿份</td></tr>
+      <tr><th>净资产规模</th><td>0.07亿元（截止至：2026年03月31日）</td><th>份额规模</th><td>0.0653亿份</td></tr>
+    </table>
+    </body></html>
+    """
+
+    frame = _fund_basic_frame_from_eastmoney_html(html)
+
+    assert frame.to_dict("records") == [
+        {"item": "基金代码", "value": "017725"},
+        {"item": "基金名称", "value": "百嘉中证同业存单AAA指数7天持有"},
+        {"item": "基金类型", "value": "指数型-固收"},
+        {"item": "成立时间", "value": "2023-03-16"},
+        {"item": "最新规模", "value": "0.07亿元"},
+    ]
+
+
+def test_fetch_fund_info_falls_back_to_eastmoney_basic_profile():
+    calls = []
+
+    def basic_fetcher(symbol):
+        calls.append(("basic", symbol))
+        raise KeyError("data")
+
+    def purchase_fetcher():
+        return pd.DataFrame(
+            {
+                "基金代码": ["017725"],
+                "申购状态": ["限大额"],
+                "赎回状态": ["开放赎回"],
+                "日累计限定金额": [10000000.0],
+            }
+        )
+
+    def fee_fetcher(symbol, indicator):
+        return pd.DataFrame()
+
+    def basic_page_fetcher(url):
+        calls.append(("basic_page", url))
+        return """
+        <html><body>
+        <table>
+          <tr><th>基金全称</th><td>百嘉中证同业存单AAA指数7天持有期证券投资基金</td><th>基金简称</th><td>百嘉中证同业存单AAA指数7天持有</td></tr>
+          <tr><th>基金代码</th><td>017725（前端）</td><th>基金类型</th><td>指数型-固收</td></tr>
+          <tr><th>发行日期</th><td>2023年03月01日</td><th>成立日期/规模</th><td>2023年03月16日 / 11.957亿份</td></tr>
+          <tr><th>净资产规模</th><td>0.07亿元（截止至：2026年03月31日）</td><th>份额规模</th><td>0.0653亿份</td></tr>
+        </table>
+        </body></html>
+        """
+
+    result = fetch_fund_info(
+        "017725",
+        basic_fetcher=basic_fetcher,
+        purchase_fetcher=purchase_fetcher,
+        fee_fetcher=fee_fetcher,
+        basic_page_fetcher=basic_page_fetcher,
+        fee_page_fetcher=lambda url: "",
+        rating_fetcher=lambda: pd.DataFrame(),
+        clock=lambda: "2026-06-07T12:00:00+00:00",
+    )
+
+    assert result.name == "百嘉中证同业存单AAA指数7天持有"
+    assert result.fund_type == "指数型-固收"
+    assert result.established_date == "2023-03-16"
+    assert result.asset_size == "0.07亿元"
+    assert result.purchase_status == "限大额"
+    assert result.purchase_limit_amount == 10000000.0
+    assert calls == [
+        ("basic", "017725"),
+        ("basic_page", "https://fundf10.eastmoney.com/jbgk_017725.html"),
     ]
 
 

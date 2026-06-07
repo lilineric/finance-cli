@@ -57,6 +57,7 @@ FUND_NAV_TYPES = {
     "accumulated": ("accumulated_nav", "累计净值走势"),
 }
 FUND_FEE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
+FUND_BASIC_URL = "https://fundf10.eastmoney.com/jbgk_{code}.html"
 FUND_BASIC_KEY_COLUMNS = ("item", "项目", "字段", "名称")
 FUND_BASIC_VALUE_COLUMNS = ("value", "内容", "值")
 FUND_CODE_COLUMNS = ("基金代码", "代码", "fund_code", "code")
@@ -296,6 +297,7 @@ def fetch_cn10y_yield_rows(fetcher: Callable[..., pd.DataFrame] | None = None) -
 def fetch_fund_info(
     code: str,
     basic_fetcher: Callable[..., pd.DataFrame] | None = None,
+    basic_page_fetcher: Callable[[str], str] | None = None,
     purchase_fetcher: Callable[..., pd.DataFrame] | None = None,
     fee_fetcher: Callable[..., pd.DataFrame] | None = None,
     fee_page_fetcher: Callable[[str], str] | None = None,
@@ -326,7 +328,17 @@ def fetch_fund_info(
         except TypeError:
             basic_frame = basic_fetcher(normalized_code)
     except Exception as exc:
-        raise DataSourceError(f"Failed to fetch fund basic info for {normalized_code}: {exc}") from exc
+        if not uses_default_fetchers and basic_page_fetcher is None:
+            raise DataSourceError(f"Failed to fetch fund basic info for {normalized_code}: {exc}") from exc
+        try:
+            page_fetcher = basic_page_fetcher or _fetch_text
+            basic_frame = _fund_basic_frame_from_eastmoney_html(
+                page_fetcher(FUND_BASIC_URL.format(code=normalized_code))
+            )
+        except Exception as fallback_exc:
+            raise DataSourceError(
+                f"Failed to fetch fund basic info for {normalized_code}: {exc}"
+            ) from fallback_exc
 
     try:
         purchase_status_frame = purchase_fetcher()
@@ -721,7 +733,16 @@ def normalize_redemption_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]
             tier = _parse_holding_period_range(holding_text)
             rate = _parse_rate(rate_text)
         except DataSourceError as exc:
-            raise DataSourceError(f"Failed to parse redemption fee tier: {holding_text}") from exc
+            try:
+                rate = _parse_rate(rate_text)
+            except DataSourceError:
+                raise DataSourceError(f"Failed to parse redemption fee tier: {holding_text}") from exc
+            if _is_usual_no_redemption_fee_text(holding_text) and rate == 0:
+                tier = {"min_holding_days": 0, "max_holding_days": None}
+            elif _is_conditional_redemption_fee_text(holding_text):
+                continue
+            else:
+                raise DataSourceError(f"Failed to parse redemption fee tier: {holding_text}") from exc
         tiers.append(
             {
                 **tier,
@@ -730,6 +751,24 @@ def normalize_redemption_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]
             }
         )
     return sorted(tiers, key=lambda item: int(item["min_holding_days"]))
+
+
+def _is_usual_no_redemption_fee_text(text: str) -> bool:
+    normalized = text.replace(" ", "")
+    return (
+        ("通常" in normalized or "一般" in normalized)
+        and "不收取" in normalized
+        and "赎回费" in normalized
+    )
+
+
+def _is_conditional_redemption_fee_text(text: str) -> bool:
+    normalized = text.replace(" ", "")
+    return (
+        "强制赎回费用" in normalized
+        or ("前提下" in normalized and "赎回" in normalized)
+        or ("当" in normalized and "赎回" in normalized and "征收" in normalized)
+    )
 
 
 def normalize_fund_info(
@@ -819,6 +858,59 @@ def _fee_value_after_label(
             except DataSourceError:
                 return None
     return None
+
+
+def _fund_basic_frame_from_eastmoney_html(html: str) -> pd.DataFrame:
+    mapping = _eastmoney_basic_mapping(html)
+    rows = [
+        ("基金代码", _fund_code_from_eastmoney_value(mapping.get("基金代码"))),
+        ("基金名称", mapping.get("基金简称") or mapping.get("基金名称")),
+        ("基金类型", mapping.get("基金类型")),
+        ("成立时间", _established_date_from_eastmoney_value(mapping.get("成立日期/规模"))),
+        ("最新规模", _asset_size_from_eastmoney_value(mapping.get("净资产规模"))),
+    ]
+    return pd.DataFrame(
+        [{"item": key, "value": value} for key, value in rows if value]
+    )
+
+
+def _eastmoney_basic_mapping(html: str) -> dict[str, str]:
+    try:
+        tables = pd.read_html(StringIO(html))
+    except ValueError:
+        return {}
+    for table in tables:
+        mapping: dict[str, str] = {}
+        for _, row in table.iterrows():
+            values = [str(value).strip() for value in row if not _is_missing(value)]
+            for index in range(0, len(values) - 1, 2):
+                mapping[values[index]] = values[index + 1]
+        if "基金代码" in mapping and ("基金简称" in mapping or "基金名称" in mapping):
+            return mapping
+    return {}
+
+
+def _fund_code_from_eastmoney_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    match = re.search(r"\d{6}", value)
+    return None if match is None else match.group(0)
+
+
+def _established_date_from_eastmoney_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    date_text = value.split("/", 1)[0].strip()
+    if match := re.fullmatch(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_text):
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    return date_text
+
+
+def _asset_size_from_eastmoney_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return re.sub(r"[（(].*?[）)]", "", value).strip()
 
 
 def _html_section_after_title(html: str, title: str) -> str | None:
