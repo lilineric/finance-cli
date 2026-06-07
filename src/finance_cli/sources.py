@@ -919,6 +919,8 @@ def _parse_amount_range(text: str) -> dict[str, int | None]:
 
 def _parse_holding_period_range(text: str) -> dict[str, int | None]:
     normalized = text.replace(" ", "")
+    if normalized in {"---", "--", "-"}:
+        return {"min_holding_days": 0, "max_holding_days": None}
     if match := re.fullmatch(r"(?:小于等于|<=|≤)(\d+)(天|年)", normalized):
         return {
             "min_holding_days": 0,

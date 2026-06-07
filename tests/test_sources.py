@@ -260,6 +260,26 @@ def test_normalize_redemption_fee_rows_parses_holding_period_tiers():
     ]
 
 
+def test_normalize_redemption_fee_rows_parses_flat_zero_fee_row():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["---"],
+            "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
 def test_normalize_redemption_fee_rows_accepts_applicable_period_column_and_comma_ranges():
     frame = pd.DataFrame(
         {
