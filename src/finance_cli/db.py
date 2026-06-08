@@ -441,6 +441,21 @@ class MetricsRepository:
             updated_at=str(row["updated_at"]),
         )
 
+    def fund_info_codes(self) -> list[str]:
+        response = self.client.post_json(
+            "/v1/sqlite/query",
+            {
+                "db": self.db_name,
+                "sql": """
+                SELECT code
+                FROM fund_info
+                ORDER BY code ASC
+                """,
+                "params": [],
+            },
+        )
+        return [str(row[0]) for row in response.get("rows", [])]
+
 
 def _decode_json_response(body: bytes) -> dict[str, Any]:
     if not body:

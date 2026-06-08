@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 from html import unescape
 from io import StringIO
 import json
@@ -6,6 +7,7 @@ from numbers import Integral, Real
 import re
 from typing import Callable
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import brotli
@@ -35,11 +37,20 @@ CN10Y_YIELD_VALUE_COLUMNS = ("中国国债收益率10年", "中国10年期国债
 FUND_NAV_DATE_COLUMNS = ("净值日期", "日期", "date", "trade_date")
 FUND_UNIT_NAV_VALUE_COLUMNS = ("单位净值", "unit_nav")
 FUND_ACCUMULATED_NAV_VALUE_COLUMNS = ("累计净值", "accumulated_nav")
+MONEY_FUND_INCOME_COLUMNS = ("每万份收益", "million_copies_income")
+MONEY_FUND_ANNUALIZED_YIELD_COLUMNS = (
+    "7日年化收益率",
+    "七日年化收益率",
+    "seven_day_annualized_yield",
+)
 CSINDEX_HISTORY_START_DATE = "19900101"
 _AKSHARE_PE_INDEX_CODES: frozenset[str] = frozenset({"930707", "990001", "930713"})
 DANJUAN_GLOBAL_PE_INDEX_CODES: frozenset[str] = frozenset({"NDX", "SP500"})
 DANJUAN_GLOBAL_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
 DANJUAN_CSI_PE_URL = "https://danjuanfunds.com/djapi/index_eva/pe_history/{code}?day=all"
+FUNDDB_INDEX_VALUE_URL = "https://api.jiucaishuo.com/v2/guzhi/newtubiaolinedata"
+FUNDDB_REQUEST_KEY = "EWf45rlv#kfsr@k#gfksgkr"
+FUNDDB_VERSION = "2.2.7"
 VN30_PE_URL = "https://worldperatio.com/area/vietnam/"
 WORLDPERATIO_PE_BLOCK_PATTERN = re.compile(r"detailPE_data\s*=\s*(\[.*?\]);", re.DOTALL)
 WORLDPERATIO_PE_DATA_PATTERN = re.compile(
@@ -56,8 +67,12 @@ FUND_NAV_TYPES = {
     "unit": ("unit_nav", "单位净值走势"),
     "accumulated": ("accumulated_nav", "累计净值走势"),
 }
+MONEY_FUND_INCOME_METRIC = "million_copies_income"
+MONEY_FUND_ANNUALIZED_YIELD_METRIC = "seven_day_annualized_yield"
 FUND_FEE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
 FUND_BASIC_URL = "https://fundf10.eastmoney.com/jbgk_{code}.html"
+FUND_PINGZHONGDATA_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
+MONEY_FUND_HISTORY_URL = "https://api.fund.eastmoney.com/f10/lsjz"
 FUND_BASIC_KEY_COLUMNS = ("item", "项目", "字段", "名称")
 FUND_BASIC_VALUE_COLUMNS = ("value", "内容", "值")
 FUND_CODE_COLUMNS = ("基金代码", "代码", "fund_code", "code")
@@ -157,9 +172,11 @@ def fetch_index_pe_rows(code: str, fetcher: Callable[..., pd.DataFrame] | None =
 def fetch_index_dividend_yield_rows(
     code: str,
     fetcher: Callable[..., pd.DataFrame] | None = None,
+    history_fetcher: Callable[[str], list[DailyMetric]] | None = None,
     query_date: str | None = None,
 ) -> list[DailyMetric]:
     normalized_code = normalize_csindex_code(code)
+    use_default_history_fetcher = fetcher is None and history_fetcher is None
     if fetcher is None:
         try:
             import akshare as ak
@@ -174,6 +191,12 @@ def fetch_index_dividend_yield_rows(
         raise DataSourceError(f"Failed to fetch index dividend yield rows for {code}: {exc}") from exc
 
     rows = normalize_index_dividend_yield_rows(normalized_code, frame)
+    if use_default_history_fetcher:
+        history_rows = fetch_index_dividend_yield_history_rows(normalized_code)
+        rows = merge_index_dividend_yield_rows(rows, history_rows)
+    elif history_fetcher is not None:
+        rows = merge_index_dividend_yield_rows(rows, history_fetcher(normalized_code))
+
     if query_date is None:
         return rows
 
@@ -184,6 +207,41 @@ def fetch_index_dividend_yield_rows(
             f"No dividend yield data found for index {normalized_code} on or before {requested_date}"
         )
     return [max(eligible_rows, key=lambda row: row.date)]
+
+
+def fetch_index_dividend_yield_history_rows(
+    code: str,
+    fetcher: Callable[[dict[str, str]], dict[str, object]] | None = None,
+) -> list[DailyMetric]:
+    normalized_code = normalize_csindex_code(code)
+    last_error: Exception | None = None
+    for funddb_code in _funddb_index_code_candidates(normalized_code):
+        params = {
+            "gu_code": funddb_code,
+            "pe_category": "xilv",
+            "year": "10",
+            "ver": "new",
+        }
+        try:
+            payload = fetcher(params) if fetcher is not None else _fetch_funddb_json(params)
+            return normalize_funddb_index_dividend_yield_rows(normalized_code, payload)
+        except Exception as exc:
+            last_error = exc
+    raise DataSourceError(
+        f"Failed to fetch historical index dividend yield rows for {code}: {last_error}"
+    ) from last_error
+
+
+def _funddb_index_code_candidates(normalized_code: str) -> list[str]:
+    if normalized_code.startswith("H"):
+        return [f"{normalized_code.lower()}.CSI", f"{normalized_code}.CSI"]
+    if normalized_code.startswith("000"):
+        return [f"{normalized_code}.CSI", f"{normalized_code}.SH"]
+    if normalized_code.startswith(("930", "931", "932")):
+        return [f"{normalized_code}.CSI"]
+    if normalized_code.startswith("399"):
+        return [f"{normalized_code}.SZ"]
+    return [normalized_code]
 
 
 def fetch_index_pb_rows(
@@ -401,6 +459,8 @@ def fetch_fund_nav_rows(
     normalized_code = normalize_fund_code(code)
     metric, indicator = _fund_nav_type_settings(nav_type)
     if fetcher is None:
+        if fetch_fund_is_money_fund(normalized_code):
+            raise DataSourceError(f"Fund {normalized_code} is a money fund; NAV trend data is unavailable")
         try:
             import akshare as ak
         except Exception as exc:  # pragma: no cover - depends on optional runtime environment
@@ -414,6 +474,80 @@ def fetch_fund_nav_rows(
         raise DataSourceError(f"Failed to fetch fund NAV rows for {code}: {exc}") from exc
 
     return normalize_fund_nav_rows(normalized_code, metric, frame)
+
+
+def fetch_fund_is_money_fund(
+    code: str,
+    fetcher: Callable[[str], str] | None = None,
+) -> bool:
+    normalized_code = normalize_fund_code(code)
+    url = FUND_PINGZHONGDATA_URL.format(code=normalized_code)
+    try:
+        text = fetcher(url) if fetcher is not None else _fetch_text(url)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch fund type for {code}: {exc}") from exc
+    return re.search(r"\bishb\s*=\s*true\b", text) is not None
+
+
+def fetch_money_fund_rows(
+    code: str,
+    fetcher: Callable[..., pd.DataFrame] | None = None,
+) -> list[DailyMetric]:
+    normalized_code = normalize_fund_code(code)
+    try:
+        frame = (
+            _money_fund_frame_from_eastmoney(normalized_code)
+            if fetcher is None
+            else fetcher(symbol=normalized_code)
+        )
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch money fund rows for {code}: {exc}") from exc
+
+    return normalize_money_fund_rows(normalized_code, frame)
+
+
+def _money_fund_frame_from_eastmoney(code: str) -> pd.DataFrame:
+    page_size = 20
+    rows: list[dict[str, object]] = []
+    total_count = 0
+    page = 1
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/80.0.3987.149 Safari/537.36"
+        ),
+        "Referer": f"https://fundf10.eastmoney.com/jjjz_{code}.html",
+        "Host": "api.fund.eastmoney.com",
+    }
+
+    while page == 1 or len(rows) < total_count:
+        params = {
+            "fundCode": code,
+            "pageIndex": str(page),
+            "pageSize": str(page_size),
+            "startDate": "",
+            "endDate": "",
+        }
+        payload = json.loads(_fetch_text(f"{MONEY_FUND_HISTORY_URL}?{urlencode(params)}", headers=headers))
+        data = payload.get("Data") or {}
+        page_rows = data.get("LSJZList") or []
+        if not page_rows:
+            break
+        rows.extend(page_rows)
+        total_count = int(payload.get("TotalCount") or len(rows))
+        page += 1
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    frame = frame[["FSRQ", "DWJZ", "LJJZ"]]
+    frame.columns = ["净值日期", "每万份收益", "7日年化收益率"]
+    frame.sort_values(by=["净值日期"], inplace=True, ignore_index=True)
+    frame["净值日期"] = pd.to_datetime(frame["净值日期"], errors="coerce").dt.date
+    frame["每万份收益"] = pd.to_numeric(frame["每万份收益"], errors="coerce")
+    frame["7日年化收益率"] = pd.to_numeric(frame["7日年化收益率"], errors="coerce")
+    return frame
 
 
 def normalize_fund_code(code: str) -> str:
@@ -519,6 +653,85 @@ def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[
         )
         for _, row in frame.iterrows()
     ]
+
+
+def normalize_funddb_index_dividend_yield_rows(
+    code: str,
+    payload: dict[str, object],
+) -> list[DailyMetric]:
+    series_list = _funddb_series_list(payload)
+    selected_series = None
+    for series in series_list:
+        if not isinstance(series, dict):
+            continue
+        if str(series.get("name", "")) == "股息率":
+            selected_series = series
+            break
+    if selected_series is None:
+        for series in series_list:
+            if not isinstance(series, dict):
+                continue
+            name = str(series.get("name", ""))
+            if "股息" in name or "息率" in name:
+                selected_series = series
+                break
+
+    points = selected_series.get("data") if isinstance(selected_series, dict) else None
+    if not isinstance(points, list):
+        raise DataSourceError(f"No historical dividend yield data found for index {code}")
+
+    rows = []
+    for point in points:
+        if not isinstance(point, list | tuple) or len(point) < 2:
+            continue
+        timestamp_ms, value = point[0], point[1]
+        if _is_missing(value):
+            continue
+        rows.append(
+            DailyMetric(
+                "index",
+                code,
+                "dividend_yield",
+                _timestamp_ms_to_utc_date(timestamp_ms),
+                _to_float(value),
+                "funddb",
+            )
+        )
+    if not rows:
+        raise DataSourceError(f"No historical dividend yield data found for index {code}")
+    return sorted(rows, key=lambda row: row.date)
+
+
+def merge_index_dividend_yield_rows(
+    current_rows: list[DailyMetric],
+    historical_rows: list[DailyMetric],
+) -> list[DailyMetric]:
+    rows_by_date = {row.date: row for row in historical_rows}
+    rows_by_date.update({row.date: row for row in current_rows})
+    return [rows_by_date[row_date] for row_date in sorted(rows_by_date)]
+
+
+def _funddb_series_list(payload: dict[str, object]) -> list[object]:
+    data = payload.get("data", payload)
+    if isinstance(data, dict):
+        series = data.get("series")
+        if isinstance(series, list):
+            return series
+        chart = data.get("tubiao")
+        if isinstance(chart, dict):
+            series = chart.get("series")
+            if isinstance(series, list):
+                return series
+        chart = data.get("chart")
+        if isinstance(chart, dict):
+            series = chart.get("series")
+            if isinstance(series, list):
+                return series
+    raise DataSourceError("FundDB historical dividend yield response did not include chart series")
+
+
+def _timestamp_ms_to_utc_date(value: object) -> str:
+    return datetime.fromtimestamp(_to_float(value) / 1000, tz=timezone.utc).date().isoformat()
 
 
 def normalize_index_pb_rows_from_etf_run(code: str, html: str) -> list[DailyMetric]:
@@ -693,6 +906,41 @@ def normalize_fund_nav_rows(code: str, metric: str, frame: pd.DataFrame) -> list
     return rows
 
 
+def normalize_money_fund_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
+    date_column = _first_existing_column(frame, FUND_NAV_DATE_COLUMNS)
+    income_column = _first_existing_column(frame, MONEY_FUND_INCOME_COLUMNS)
+    annualized_yield_column = _first_existing_column(frame, MONEY_FUND_ANNUALIZED_YIELD_COLUMNS)
+
+    rows = []
+    for _, row in frame.iterrows():
+        row_date = _to_iso_date(row[date_column])
+        if not _is_missing(row[income_column]):
+            rows.append(
+                DailyMetric(
+                    "fund",
+                    code,
+                    MONEY_FUND_INCOME_METRIC,
+                    row_date,
+                    _to_float(row[income_column]),
+                    "akshare",
+                )
+            )
+        if not _is_missing(row[annualized_yield_column]):
+            rows.append(
+                DailyMetric(
+                    "fund",
+                    code,
+                    MONEY_FUND_ANNUALIZED_YIELD_METRIC,
+                    row_date,
+                    _to_float(row[annualized_yield_column]),
+                    "akshare",
+                )
+            )
+    if not rows:
+        raise DataSourceError(f"No money fund data found for {code}")
+    return rows
+
+
 def normalize_purchase_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
     if frame.empty:
         return []
@@ -756,7 +1004,7 @@ def normalize_redemption_fee_rows(frame: pd.DataFrame) -> list[dict[str, object]
 def _is_usual_no_redemption_fee_text(text: str) -> bool:
     normalized = text.replace(" ", "")
     return (
-        ("通常" in normalized or "一般" in normalized)
+        ("通常" in normalized or "一般" in normalized or "正常" in normalized)
         and "不收取" in normalized
         and "赎回费" in normalized
     )
@@ -1190,8 +1438,11 @@ def _is_missing(value: object) -> bool:
         return False
 
 
-def _fetch_text(url: str) -> str:
-    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def _fetch_text(url: str, headers: dict[str, str] | None = None) -> str:
+    request_headers = {"User-Agent": "Mozilla/5.0"}
+    if headers is not None:
+        request_headers.update(headers)
+    request = Request(url, headers=request_headers)
     try:
         with urlopen(request, timeout=30) as response:
             return _decode_response_text(response.read(), response.headers.get("Content-Encoding"))
@@ -1200,6 +1451,88 @@ def _fetch_text(url: str) -> str:
         if exc.code == 500 and body:
             return body
         raise
+
+
+def _fetch_funddb_json(params: dict[str, str]) -> dict[str, object]:
+    data = dict(params)
+    data["type"] = "pc"
+    data["version"] = FUNDDB_VERSION
+    data["authtoken"] = ""
+    data["act_time"] = str(int(datetime.now(tz=timezone.utc).timestamp() * 1000))
+    _sign_funddb_payload(data)
+
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = Request(
+        FUNDDB_INDEX_VALUE_URL,
+        data=body,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": "https://funddb.cn",
+            "Referer": "https://funddb.cn/site/index",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            text = _decode_response_text(response.read(), response.headers.get("Content-Encoding"))
+    except HTTPError as exc:
+        body_text = _decode_response_text(exc.read(), exc.headers.get("Content-Encoding"))
+        raise DataSourceError(f"FundDB request failed with HTTP {exc.code}: {body_text}") from exc
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DataSourceError("FundDB response was not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise DataSourceError("FundDB response was not a JSON object")
+    if payload.get("code") not in (None, 0, 200):
+        raise DataSourceError(f"FundDB request failed: {payload.get('message') or payload.get('msg') or payload}")
+    return payload
+
+
+def _sign_funddb_payload(data: dict[str, str]) -> None:
+    signature_text = ""
+    for key in sorted(data):
+        value = data.get(key)
+        if value or value == "0":
+            signature_text += str(value)
+    digest = hashlib.md5(f"{signature_text}{FUNDDB_REQUEST_KEY}".encode("utf-8")).hexdigest()
+    fields = {
+        "tirgkjfs": digest[0:2],
+        "abiokytke": digest[21:23],
+        "u54rg5d": digest[2:4],
+        "kf54ge7": digest[31:32],
+        "tiklsktr4": digest[1:2],
+        "lksytkjh": digest[17:21],
+        "sbnoywr": digest[23:25],
+        "bgd7h8tyu54": digest[6:8],
+        "y654b5fs3tr": digest[11:12],
+        "bioduytlw": digest[5:6],
+        "bd4uy742": digest[26:27],
+        "h67456y": digest[16:19],
+        "bvytikwqjk": digest[6:8],
+        "ngd4uy551": digest[17:19],
+        "bgiuytkw": digest[9:11],
+        "nd354uy4752": digest[30:31],
+        "ghtoiutkmlg": digest[11:14],
+        "bd24y6421f": digest[24:26],
+        "tbvdiuytk": digest[16:17],
+        "ibvytiqjek": digest[14:16],
+        "jnhf8u5231": digest[9:11],
+        "fjlkatj": digest[2:5],
+        "hy5641d321t": digest[25:27],
+        "iogojti": digest[25:26],
+        "ngd4yut78": digest[12:14],
+        "nkjhrew": digest[26:27],
+        "yt447e13f": digest[8:9],
+        "n3bf4uj7y7": digest[18:19],
+        "nbf4uj7y432": digest[21:23],
+        "yi854tew": digest[29:31],
+        "h13ey474": digest[29:32],
+        "quikgdky": digest[27:29],
+    }
+    data.update(fields)
 
 
 def _decode_response_text(body: bytes, content_encoding: str | None) -> str:

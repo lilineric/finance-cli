@@ -4,7 +4,14 @@ from typer.testing import CliRunner
 
 from finance_cli.cli import app
 from finance_cli.db import DailyMetric, FundInfo, OperationFee, SQLiteApiError
-from finance_cli.service import MetricQueryResult, MetricRangeQueryResult
+from finance_cli.service import (
+    FundInfoChange,
+    FundInfoSyncFailure,
+    FundInfoSyncResult,
+    FundInfoSyncSuccess,
+    MetricQueryResult,
+    MetricRangeQueryResult,
+)
 from finance_cli.sources import DataSourceError
 
 
@@ -491,6 +498,154 @@ def test_fund_nav_command_supports_accumulated_nav(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert seen["metric"] == "accumulated_nav"
     assert "累计净值: 1.9876" in result.output
+
+
+def test_fund_nav_command_outputs_money_fund_metrics_when_nav_trend_missing(monkeypatch):
+    calls = []
+
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        calls.append(metric)
+        if metric == "unit_nav":
+            raise DataSourceError("Failed to fetch fund NAV rows for 001821: Data_netWorthTrend is not defined")
+        if metric == "million_copies_income":
+            return MetricQueryResult(
+                asset_type,
+                code,
+                metric,
+                requested_date,
+                "2026-06-07",
+                None,
+                0.3571,
+                None,
+                None,
+                "akshare",
+                None,
+            )
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-06-07",
+            None,
+            1.342,
+            None,
+            None,
+            "akshare",
+            None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(
+        app,
+        ["fund-nav", "--code", "001821", "--date", "2026-06-08", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["unit_nav", "million_copies_income", "seven_day_annualized_yield"]
+    payload = json.loads(result.output)
+    assert payload == {
+        "asset_type": "fund",
+        "code": "001821",
+        "fund_type": "货币基金",
+        "requested_date": "2026-06-08",
+        "actual_date": "2026-06-07",
+        "metrics": {
+            "million_copies_income": 0.3571,
+            "seven_day_annualized_yield": 1.342,
+        },
+        "source": "akshare",
+    }
+
+
+def test_fund_nav_command_outputs_money_fund_metrics_text(monkeypatch):
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        if metric == "unit_nav":
+            raise DataSourceError("Failed to fetch fund NAV rows for 001821: Data_netWorthTrend is not defined")
+        value = 0.3571 if metric == "million_copies_income" else 1.342
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-06-07",
+            None,
+            value,
+            None,
+            None,
+            "akshare",
+            None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["fund-nav", "--code", "001821", "--date", "2026-06-08"])
+
+    assert result.exit_code == 0
+    assert "基金类型: 货币基金" in result.output
+    assert "每万份收益: 0.3571" in result.output
+    assert "7日年化收益率: 1.342" in result.output
+
+
+def test_fund_nav_command_outputs_money_fund_range_json(monkeypatch):
+    calls = []
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        calls.append(metric)
+        if metric == "unit_nav":
+            raise DataSourceError("Failed to fetch fund NAV rows for 001821: Data_netWorthTrend is not defined")
+        values = [("2026-06-06", 0.3571), ("2026-06-07", 0.3572)]
+        if metric == "seven_day_annualized_yield":
+            values = [("2026-06-06", 1.343), ("2026-06-07", 1.342)]
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-06-06",
+            "2026-06-07",
+            [(row_date, value, "akshare") for row_date, value in values],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["fund-nav", "--code", "001821", "--from", "2026-06-06", "--to", "2026-06-08", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["unit_nav", "million_copies_income", "seven_day_annualized_yield"]
+    payload = json.loads(result.output)
+    assert payload == {
+        "asset_type": "fund",
+        "code": "001821",
+        "fund_type": "货币基金",
+        "requested_from": "2026-06-06",
+        "requested_to": "2026-06-08",
+        "actual_start_date": "2026-06-06",
+        "actual_end_date": "2026-06-07",
+        "data": [
+            {
+                "date": "2026-06-06",
+                "metrics": {
+                    "million_copies_income": 0.3571,
+                    "seven_day_annualized_yield": 1.343,
+                },
+                "source": "akshare",
+            },
+            {
+                "date": "2026-06-07",
+                "metrics": {
+                    "million_copies_income": 0.3572,
+                    "seven_day_annualized_yield": 1.342,
+                },
+                "source": "akshare",
+            },
+        ],
+    }
 
 
 def test_fund_info_command_outputs_cached_json(monkeypatch):
@@ -1054,6 +1209,82 @@ def test_sync_gold_outputs_inserted_count(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "同步 4 条记录" in result.output
+
+
+def test_sync_fund_info_outputs_summary_and_highlighted_changes(monkeypatch):
+    highlighted = []
+
+    def sync_fund_info(self, fetcher, max_workers=5):
+        return FundInfoSyncResult(
+            total=2,
+            successes=[
+                FundInfoSyncSuccess(
+                    code="017763",
+                    name="银河领先债券C",
+                    changes=[
+                        FundInfoChange(
+                            field="purchase_status",
+                            label="申购状态",
+                            old="开放申购",
+                            new="暂停申购",
+                        )
+                    ],
+                ),
+                FundInfoSyncSuccess(code="008887", name="华夏国证半导体芯片ETF联接A", changes=[]),
+            ],
+            failures=[],
+        )
+
+    def secho(message, fg=None, bold=False):
+        highlighted.append((message, fg, bold))
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync_fund_info", sync_fund_info)
+    monkeypatch.setattr("finance_cli.cli.typer.secho", secho)
+
+    result = runner.invoke(app, ["sync", "fund-info"])
+
+    assert result.exit_code == 0
+    assert "同步基金基本信息：共 2 只，成功 2 只，失败 0 只" in result.output
+    assert highlighted == [
+        (
+            "重要变更 017763 银河领先债券C: 申购状态 开放申购 -> 暂停申购",
+            "yellow",
+            True,
+        )
+    ]
+
+
+def test_sync_fund_info_outputs_failures_without_failing_when_some_succeed(monkeypatch):
+    def sync_fund_info(self, fetcher, max_workers=5):
+        return FundInfoSyncResult(
+            total=2,
+            successes=[FundInfoSyncSuccess(code="008887", name="华夏国证半导体芯片ETF联接A", changes=[])],
+            failures=[FundInfoSyncFailure(code="017763", error="source failed")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync_fund_info", sync_fund_info)
+
+    result = runner.invoke(app, ["sync", "fund-info"])
+
+    assert result.exit_code == 0
+    assert "同步基金基本信息：共 2 只，成功 1 只，失败 1 只" in result.output
+    assert "失败 017763: source failed" in result.output
+
+
+def test_sync_fund_info_fails_when_all_refreshes_fail(monkeypatch):
+    def sync_fund_info(self, fetcher, max_workers=5):
+        return FundInfoSyncResult(
+            total=1,
+            successes=[],
+            failures=[FundInfoSyncFailure(code="017763", error="source failed")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync_fund_info", sync_fund_info)
+
+    result = runner.invoke(app, ["sync", "fund-info"])
+
+    assert result.exit_code != 0
+    assert "All fund info refreshes failed" in result.output
 
 
 def test_sync_new_metrics_output_inserted_count(monkeypatch, tmp_path):
@@ -1801,6 +2032,54 @@ def test_dividend_yield_spread_command_with_lowercase_h_code(monkeypatch):
     assert seen_code["code"] == "H30269"
     payload = json.loads(result.output)
     assert payload["code"] == "H30269"
+
+
+def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monkeypatch):
+    fetched_codes = []
+    upserted = []
+
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        fetch_missing()
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2016-01-08", 2.88, 35.0, 2500,
+            "akshare", years,
+        )
+
+    def fetch_dividend_rows(code):
+        fetched_codes.append(code)
+        return [DailyMetric("index", code, "dividend_yield", "2016-01-08", 3.15, "funddb")]
+
+    def fetch_cn10y_rows():
+        return [DailyMetric("bond", "CN10Y", "yield", "2016-01-08", 2.0, "akshare")]
+
+    def upsert_metrics(self, rows):
+        upserted.extend(rows)
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        if metric == "dividend_yield":
+            return [DailyMetric("index", code, metric, "2016-01-08", 3.15, "funddb")]
+        if metric == "yield":
+            return [DailyMetric("bond", "CN10Y", metric, "2026-05-29", 1.62, "akshare")]
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.cli.fetch_index_dividend_yield_rows", fetch_dividend_rows)
+    monkeypatch.setattr("finance_cli.cli.fetch_cn10y_yield_rows", fetch_cn10y_rows)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.upsert_metrics", upsert_metrics)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["dividend-yield-spread", "--code", "SH000922", "--json"])
+
+    assert result.exit_code == 0
+    assert fetched_codes == ["000922"]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.source) for row in upserted] == [
+        ("index", "000922", "dividend_yield", "2016-01-08", "funddb"),
+        ("bond", "CN10Y", "yield", "2016-01-08", "akshare"),
+    ]
 
 
 def test_dividend_yield_spread_range_command_outputs_json(monkeypatch):

@@ -2,7 +2,12 @@ import json
 
 from finance_cli.db import FundInfo
 
-from .service import MetricQueryResult, MetricRangeQueryResult
+from .service import (
+    MetricQueryResult,
+    MetricRangeQueryResult,
+    MoneyFundQueryResult,
+    MoneyFundRangeQueryResult,
+)
 
 
 def format_json(result: MetricQueryResult) -> str:
@@ -48,6 +53,40 @@ def format_range_json(result: MetricRangeQueryResult) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def format_money_fund_json(result: MoneyFundQueryResult) -> str:
+    payload = {
+        "asset_type": result.asset_type,
+        "code": result.code,
+        "fund_type": result.fund_type,
+        "requested_date": result.requested_date,
+        "actual_date": result.actual_date,
+        "metrics": result.metrics,
+        "source": result.source,
+    }
+    if result.stale:
+        payload["stale"] = True
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def format_money_fund_range_json(result: MoneyFundRangeQueryResult) -> str:
+    payload = {
+        "asset_type": result.asset_type,
+        "code": result.code,
+        "fund_type": result.fund_type,
+        "requested_from": result.requested_from,
+        "requested_to": result.requested_to,
+        "actual_start_date": result.actual_start_date,
+        "actual_end_date": result.actual_end_date,
+        "data": [
+            {"date": row_date, "metrics": metrics, "source": source}
+            for row_date, metrics, source in result.data
+        ],
+    }
+    if result.stale:
+        payload["stale"] = True
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def format_range_text(result: MetricRangeQueryResult) -> str:
     label = _asset_label(result.asset_type)
     lines = [
@@ -61,6 +100,29 @@ def format_range_text(result: MetricRangeQueryResult) -> str:
     lines.extend(
         f"{row_date} {value} {source}"
         for row_date, value, source in result.data
+    )
+    if result.stale:
+        lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
+    return "\n".join(lines)
+
+
+def format_money_fund_range_text(result: MoneyFundRangeQueryResult) -> str:
+    lines = [
+        f"基金: {result.code}",
+        f"基金类型: {result.fund_type}",
+        f"请求起始日期: {result.requested_from}",
+        f"请求结束日期: {result.requested_to}",
+        f"实际起始日期: {result.actual_start_date}",
+        f"实际结束日期: {result.actual_end_date}",
+    ]
+    lines.extend(
+        (
+            f"{row_date} "
+            f"每万份收益 {metrics['million_copies_income']} "
+            f"7日年化收益率 {metrics['seven_day_annualized_yield']} "
+            f"{source}"
+        )
+        for row_date, metrics, source in result.data
     )
     if result.stale:
         lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
@@ -138,6 +200,21 @@ def format_text(result: MetricQueryResult) -> str:
         lines.append(f"样本数: {result.sample_count}")
     if result.sample_start_date is not None:
         lines.append(f"样本起始日期: {result.sample_start_date}")
+    if result.stale:
+        lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
+    return "\n".join(lines)
+
+
+def format_money_fund_text(result: MoneyFundQueryResult) -> str:
+    lines = [
+        f"基金: {result.code}",
+        f"基金类型: {result.fund_type}",
+        f"请求日期: {result.requested_date}",
+        f"实际数据日期: {result.actual_date}",
+        f"数据源: {result.source}",
+        f"每万份收益: {result.metrics['million_copies_income']}",
+        f"7日年化收益率: {result.metrics['seven_day_annualized_yield']}",
+    ]
     if result.stale:
         lines.append("⚠️ 数据源不可用，当前使用数据库中的存量数据，可能不是最新的。")
     return "\n".join(lines)
@@ -249,6 +326,8 @@ def _metric_label(metric: str) -> str:
         "close": "收盘价",
         "unit_nav": "单位净值",
         "accumulated_nav": "累计净值",
+        "million_copies_income": "每万份收益",
+        "seven_day_annualized_yield": "7日年化收益率",
         "money_supply": "M2货币供应量(十亿美元)",
         "ratio": "黄金/M2比值",
         "dividend_yield_spread": "股息率-国债收益率利差",

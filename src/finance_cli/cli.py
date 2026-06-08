@@ -16,18 +16,29 @@ from finance_cli.output import (
     format_fund_info_json,
     format_fund_info_text,
     format_json,
+    format_money_fund_json,
+    format_money_fund_range_json,
+    format_money_fund_range_text,
+    format_money_fund_text,
     format_range_json,
     format_range_text,
     format_text,
 )
-from finance_cli.service import MetricsService
+from finance_cli.service import (
+    MetricsService,
+    MoneyFundQueryResult,
+    MoneyFundRangeQueryResult,
+)
 from finance_cli.sources import (
     DataSourceError,
+    MONEY_FUND_ANNUALIZED_YIELD_METRIC,
+    MONEY_FUND_INCOME_METRIC,
     compute_dividend_yield_spread_rows,
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
     fetch_dividend_yield_spread_rows,
     fetch_fund_info,
+    fetch_money_fund_rows,
     fetch_gold_rows,
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
@@ -193,6 +204,108 @@ def _default_query_date(query_date: str | None) -> str:
 
 def _default_years(years: int | None) -> int:
     return 10 if years is None else years
+
+
+def _is_missing_fund_nav_trend_error(exc: DataSourceError) -> bool:
+    message = str(exc)
+    return (
+        "Data_netWorthTrend is not defined" in message
+        or "Data_ACWorthTrend is not defined" in message
+        or "is a money fund; NAV trend data is unavailable" in message
+    )
+
+
+def _query_money_fund_value(
+    service: MetricsService,
+    code: str,
+    requested_date: str,
+) -> MoneyFundQueryResult:
+    fetch_missing = lambda: fetch_money_fund_rows(code)
+    income = service.query_value(
+        "fund",
+        code,
+        MONEY_FUND_INCOME_METRIC,
+        requested_date,
+        fetch_missing,
+    )
+    annualized_yield = service.query_value(
+        "fund",
+        code,
+        MONEY_FUND_ANNUALIZED_YIELD_METRIC,
+        requested_date,
+        fetch_missing,
+    )
+    if income.actual_date != annualized_yield.actual_date:
+        raise ValueError(f"No complete money fund data available for fund {code} on {requested_date}")
+    return MoneyFundQueryResult(
+        asset_type="fund",
+        code=code,
+        fund_type="货币基金",
+        requested_date=income.requested_date,
+        actual_date=income.actual_date,
+        metrics={
+            MONEY_FUND_INCOME_METRIC: income.value,
+            MONEY_FUND_ANNUALIZED_YIELD_METRIC: annualized_yield.value,
+        },
+        source=income.source,
+        stale=income.stale or annualized_yield.stale,
+    )
+
+
+def _query_money_fund_range(
+    service: MetricsService,
+    code: str,
+    requested_from: str,
+    requested_to: str,
+) -> MoneyFundRangeQueryResult:
+    fetch_missing = lambda: fetch_money_fund_rows(code)
+    income = service.query_range(
+        "fund",
+        code,
+        MONEY_FUND_INCOME_METRIC,
+        requested_from,
+        requested_to,
+        fetch_missing,
+    )
+    annualized_yield = service.query_range(
+        "fund",
+        code,
+        MONEY_FUND_ANNUALIZED_YIELD_METRIC,
+        requested_from,
+        requested_to,
+        fetch_missing,
+    )
+    income_by_date = {row_date: (value, source) for row_date, value, source in income.data}
+    annualized_yield_by_date = {
+        row_date: value for row_date, value, _source in annualized_yield.data
+    }
+    dates = sorted(set(income_by_date) & set(annualized_yield_by_date))
+    if not dates:
+        raise ValueError(
+            f"No complete money fund data available for fund {code} between {requested_from} and {requested_to}"
+        )
+    data = [
+        (
+            row_date,
+            {
+                MONEY_FUND_INCOME_METRIC: income_by_date[row_date][0],
+                MONEY_FUND_ANNUALIZED_YIELD_METRIC: annualized_yield_by_date[row_date],
+            },
+            income_by_date[row_date][1],
+        )
+        for row_date in dates
+    ]
+    return MoneyFundRangeQueryResult(
+        asset_type="fund",
+        code=code,
+        fund_type="货币基金",
+        requested_from=income.requested_from,
+        requested_to=income.requested_to,
+        actual_start_date=dates[0],
+        actual_end_date=dates[-1],
+        data=data,
+        stale=income.stale or annualized_yield.stale,
+    )
 
 
 def _load_fund_info_payload(data: str | None, data_file: str | None) -> dict[str, object]:
@@ -498,33 +611,58 @@ def fund_nav(
     metric = "unit_nav" if nav_type == FundNavType.unit else "accumulated_nav"
     try:
         normalized_code = normalize_fund_code(code)
+        service = _service()
         if _is_range_mode(from_date, to_date):
             requested_from, requested_to = _validate_range_options(from_date, to_date, query_date)
-            result = _service().query_range(
-                "fund",
-                normalized_code,
-                metric,
-                requested_from,
-                requested_to,
-                lambda: fetch_fund_nav_rows(normalized_code, nav_type=nav_type.value),
-            )
-            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            try:
+                result = service.query_range(
+                    "fund",
+                    normalized_code,
+                    metric,
+                    requested_from,
+                    requested_to,
+                    lambda: fetch_fund_nav_rows(normalized_code, nav_type=nav_type.value),
+                )
+                typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            except DataSourceError as exc:
+                if not _is_missing_fund_nav_trend_error(exc):
+                    raise
+                money_fund_result = _query_money_fund_range(
+                    service,
+                    normalized_code,
+                    requested_from,
+                    requested_to,
+                )
+                typer.echo(
+                    format_money_fund_range_json(money_fund_result)
+                    if json_output
+                    else format_money_fund_range_text(money_fund_result)
+                )
             return
 
         query_date = _default_query_date(query_date)
-        result = _service().query_value(
-            "fund",
-            normalized_code,
-            metric,
-            query_date,
-            lambda: fetch_fund_nav_rows(normalized_code, nav_type=nav_type.value),
-        )
+        try:
+            result = service.query_value(
+                "fund",
+                normalized_code,
+                metric,
+                query_date,
+                lambda: fetch_fund_nav_rows(normalized_code, nav_type=nav_type.value),
+            )
+            typer.echo(format_json(result) if json_output else format_text(result))
+        except DataSourceError as exc:
+            if not _is_missing_fund_nav_trend_error(exc):
+                raise
+            money_fund_result = _query_money_fund_value(service, normalized_code, query_date)
+            typer.echo(
+                format_money_fund_json(money_fund_result)
+                if json_output
+                else format_money_fund_text(money_fund_result)
+            )
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc
     except ValueError as exc:
         raise _value_click_exception(exc) from exc
-
-    typer.echo(format_json(result) if json_output else format_text(result))
 
 
 @app.command()
@@ -947,6 +1085,30 @@ def sync_gold() -> None:
     typer.echo(f"同步 {inserted} 条记录")
 
 
+@sync_app.command("fund-info")
+def sync_fund_info_command() -> None:
+    """Synchronize all cached fund profile rows."""
+    try:
+        result = _service().sync_fund_info(lambda code: fetch_fund_info(code))
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    if result.total > 0 and result.updated == 0 and result.failed > 0:
+        raise JsonClickException("runtime_error", "All fund info refreshes failed")
+
+    typer.echo(
+        f"同步基金基本信息：共 {result.total} 只，"
+        f"成功 {result.updated} 只，失败 {result.failed} 只"
+    )
+    for success in result.successes:
+        if success.changes:
+            typer.secho(_format_fund_info_changes(success), fg="yellow", bold=True)
+    for failure in result.failures:
+        typer.echo(f"失败 {failure.code}: {failure.error}")
+
+
 @sync_app.command("cn10y-yield")
 def sync_cn10y_yield() -> None:
     """Synchronize China 10-year government bond yield history."""
@@ -1035,6 +1197,25 @@ def sync_dividend_yield_spread(code: str = typer.Option(..., "--code")) -> None:
         raise _value_click_exception(exc) from exc
 
     typer.echo(f"同步 {inserted} 条记录")
+
+
+def _format_fund_info_changes(success: object) -> str:
+    changes = [
+        f"{change.label} {_format_fund_info_change_value(change.field, change.old)} -> "
+        f"{_format_fund_info_change_value(change.field, change.new)}"
+        for change in success.changes
+    ]
+    return f"重要变更 {success.code} {success.name}: {'; '.join(changes)}"
+
+
+def _format_fund_info_change_value(field: str, value: object) -> str:
+    if value is None:
+        return "无限制" if field == "purchase_limit_amount" else "未知"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{float(value):g}"
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
 
 
 def _lookup_value(

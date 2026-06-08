@@ -191,11 +191,16 @@ finance sync pe --code 000300
 finance sync dividend-yield --code 000300
 finance sync pb --code 801010 --category 一级行业
 finance sync gold
+finance sync fund-info
 finance sync cn10y-yield
 finance sync m2
 finance sync gold-usd
 finance sync gold-m2-ratio
 ```
+
+`finance sync fund-info` refreshes every fund already stored in `fund_info`. It fetches
+fund profile data in parallel, updates the database, and highlights changes to purchase
+status, purchase limits, redemption status, and fee fields.
 
 Query commands auto-refresh local data when needed.
 Percentiles use samples within the requested lookback window; output includes sample count and sample start date to show actual coverage.

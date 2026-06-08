@@ -524,6 +524,42 @@ def test_repository_returns_none_for_missing_fund_info():
     assert repo.fund_info_by_code("017763") is None
 
 
+def test_repository_queries_fund_info_codes_sorted():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/query": {
+                "columns": ["code"],
+                "rows": [["017763"], ["000032"], ["008887"]],
+                "row_count": 3,
+            }
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    result = repo.fund_info_codes()
+
+    assert result == ["017763", "000032", "008887"]
+    assert client.calls[0][0] == "/v1/sqlite/query"
+    assert "SELECT code" in client.calls[0][1]["sql"]
+    assert "ORDER BY code ASC" in client.calls[0][1]["sql"]
+    assert client.calls[0][1]["params"] == []
+
+
+def test_repository_returns_empty_fund_info_codes():
+    client = FakeSQLiteApiClient(
+        {
+            "/v1/sqlite/query": {
+                "columns": ["code"],
+                "rows": [],
+                "row_count": 0,
+            }
+        }
+    )
+    repo = MetricsRepository("http://api.example", "finance.db", client=client)
+
+    assert repo.fund_info_codes() == []
+
+
 def test_repository_raises_api_errors():
     client = FakeSQLiteApiClient(
         {

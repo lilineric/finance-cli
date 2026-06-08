@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 
@@ -46,6 +47,71 @@ class MetricRangeQueryResult:
     actual_end_date: str
     data: list[tuple[str, float, str]]
     stale: bool = False
+
+
+@dataclass(frozen=True)
+class MoneyFundQueryResult:
+    asset_type: str
+    code: str
+    fund_type: str
+    requested_date: str
+    actual_date: str
+    metrics: dict[str, float]
+    source: str
+    stale: bool = False
+
+
+@dataclass(frozen=True)
+class MoneyFundRangeQueryResult:
+    asset_type: str
+    code: str
+    fund_type: str
+    requested_from: str
+    requested_to: str
+    actual_start_date: str
+    actual_end_date: str
+    data: list[tuple[str, dict[str, float], str]]
+    stale: bool = False
+
+
+@dataclass(frozen=True)
+class FundInfoChange:
+    field: str
+    label: str
+    old: object
+    new: object
+
+
+@dataclass(frozen=True)
+class FundInfoSyncSuccess:
+    code: str
+    name: str
+    changes: list[FundInfoChange]
+
+
+@dataclass(frozen=True)
+class FundInfoSyncFailure:
+    code: str
+    error: str
+
+
+@dataclass(frozen=True)
+class FundInfoSyncResult:
+    total: int
+    successes: list[FundInfoSyncSuccess]
+    failures: list[FundInfoSyncFailure]
+
+    @property
+    def updated(self) -> int:
+        return len(self.successes)
+
+    @property
+    def unchanged(self) -> int:
+        return len([success for success in self.successes if not success.changes])
+
+    @property
+    def failed(self) -> int:
+        return len(self.failures)
 
 
 class MetricsService:
@@ -97,6 +163,48 @@ class MetricsService:
         self.repository.initialize()
         self.repository.upsert_fund_info(fund_info)
         return fund_info
+
+    def sync_fund_info(
+        self,
+        fetch_fund_info: Callable[[str], FundInfo],
+        max_workers: int = 5,
+    ) -> FundInfoSyncResult:
+        self.repository.initialize()
+        codes = self.repository.fund_info_codes()
+        cached_by_code = {code: self.repository.fund_info_by_code(code) for code in codes}
+        if not codes:
+            return FundInfoSyncResult(total=0, successes=[], failures=[])
+
+        fetched_by_code: dict[str, FundInfo] = {}
+        failures: list[FundInfoSyncFailure] = []
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            futures = {executor.submit(fetch_fund_info, code): code for code in codes}
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    fetched_by_code[code] = future.result()
+                except Exception as exc:
+                    failures.append(FundInfoSyncFailure(code=code, error=str(exc)))
+
+        successes: list[FundInfoSyncSuccess] = []
+        for code in codes:
+            fresh = fetched_by_code.get(code)
+            if fresh is None:
+                continue
+            try:
+                self.repository.upsert_fund_info(fresh)
+            except Exception as exc:
+                failures.append(FundInfoSyncFailure(code=code, error=str(exc)))
+                continue
+            successes.append(
+                FundInfoSyncSuccess(
+                    code=fresh.code,
+                    name=fresh.name,
+                    changes=_fund_info_changes(cached_by_code.get(code), fresh),
+                )
+            )
+
+        return FundInfoSyncResult(total=len(codes), successes=successes, failures=failures)
 
     def query(
         self,
@@ -404,6 +512,42 @@ class MetricsService:
                 "9999-12-31",
             )
         )
+
+
+def _fund_info_changes(old: FundInfo | None, new: FundInfo) -> list[FundInfoChange]:
+    if old is None:
+        return []
+
+    checks = [
+        ("purchase_status", "申购状态", old.purchase_status, new.purchase_status),
+        ("purchase_limit_amount", "限购金额", old.purchase_limit_amount, new.purchase_limit_amount),
+        ("redemption_status", "赎回状态", old.redemption_status, new.redemption_status),
+        (
+            "operation_fee.management_fee",
+            "管理费率",
+            old.operation_fee.management_fee,
+            new.operation_fee.management_fee,
+        ),
+        (
+            "operation_fee.custodian_fee",
+            "托管费率",
+            old.operation_fee.custodian_fee,
+            new.operation_fee.custodian_fee,
+        ),
+        (
+            "operation_fee.sales_service_fee",
+            "销售服务费率",
+            old.operation_fee.sales_service_fee,
+            new.operation_fee.sales_service_fee,
+        ),
+        ("purchase_fee", "申购费率", old.purchase_fee, new.purchase_fee),
+        ("redemption_fee", "赎回费率", old.redemption_fee, new.redemption_fee),
+    ]
+    return [
+        FundInfoChange(field=field, label=label, old=old_value, new=new_value)
+        for field, label, old_value, new_value in checks
+        if old_value != new_value
+    ]
 
 
 def _has_incomplete_lookback(sample_start_date: str, expected_start_date: str) -> bool:

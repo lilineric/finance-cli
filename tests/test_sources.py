@@ -14,9 +14,12 @@ from finance_cli.sources import (
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
     fetch_index_dividend_yield_rows,
+    fetch_index_dividend_yield_history_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
     fetch_fund_info,
+    fetch_fund_is_money_fund,
+    fetch_money_fund_rows,
     fetch_fund_nav_rows,
     fetch_m2_rows,
     normalize_index_pe_code,
@@ -25,6 +28,7 @@ from finance_cli.sources import (
     normalize_danjuan_index_pe_rows,
     normalize_csindex_code,
     normalize_fund_info,
+    normalize_money_fund_rows,
     normalize_fund_nav_rows,
     normalize_purchase_fee_rows,
     normalize_index_pb_rows_from_etf_run,
@@ -32,6 +36,8 @@ from finance_cli.sources import (
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
     normalize_index_dividend_yield_rows,
+    normalize_funddb_index_dividend_yield_rows,
+    merge_index_dividend_yield_rows,
     normalize_index_pe_rows,
     normalize_worldperatio_pe_rows,
     normalize_sw_index_pb_rows,
@@ -151,6 +157,25 @@ def test_normalize_fund_nav_rows_accepts_accumulated_nav_columns():
 
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("fund", "017763", "accumulated_nav", "2026-05-22", 1.9876, "akshare"),
+    ]
+
+
+def test_normalize_money_fund_rows_outputs_income_and_yield_metrics():
+    frame = pd.DataFrame(
+        {
+            "净值日期": ["2026-06-06", "2026-06-07"],
+            "每万份收益": [0.3571, 0.3572],
+            "7日年化收益率": [1.343, 1.342],
+        }
+    )
+
+    rows = normalize_money_fund_rows("001821", frame)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "001821", "million_copies_income", "2026-06-06", 0.3571, "akshare"),
+        ("fund", "001821", "seven_day_annualized_yield", "2026-06-06", 1.343, "akshare"),
+        ("fund", "001821", "million_copies_income", "2026-06-07", 0.3572, "akshare"),
+        ("fund", "001821", "seven_day_annualized_yield", "2026-06-07", 1.342, "akshare"),
     ]
 
 
@@ -305,6 +330,26 @@ def test_normalize_redemption_fee_rows_parses_general_no_fee_text():
     frame = pd.DataFrame(
         {
             "适用期限": ["一般情况下,不收取赎回费"],
+            "赎回费率": ["0.00%"],
+        }
+    )
+
+    tiers = normalize_redemption_fee_rows(frame)
+
+    assert tiers == [
+        {
+            "min_holding_days": 0,
+            "max_holding_days": None,
+            "original_rate": 0,
+            "discounted_rate": 0,
+        }
+    ]
+
+
+def test_normalize_redemption_fee_rows_parses_normal_no_fee_text():
+    frame = pd.DataFrame(
+        {
+            "适用期限": ["正常情况下,不收取赎回费"],
             "赎回费率": ["0.00%"],
         }
     )
@@ -1198,6 +1243,39 @@ def test_fetch_fund_nav_rows_uses_accumulated_nav_indicator():
     ]
 
 
+def test_fetch_fund_is_money_fund_reads_eastmoney_ishb_flag():
+    seen = []
+
+    def fetcher(url):
+        seen.append(url)
+        return 'var fS_code = "001821";var ishb=true;'
+
+    assert fetch_fund_is_money_fund("001821", fetcher=fetcher) is True
+    assert seen == ["https://fund.eastmoney.com/pingzhongdata/001821.js"]
+
+
+def test_fetch_money_fund_rows_uses_money_fund_fetcher():
+    calls = []
+
+    def fetcher(**kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "净值日期": ["2026-06-07"],
+                "每万份收益": [0.3571],
+                "7日年化收益率": [1.342],
+            }
+        )
+
+    rows = fetch_money_fund_rows("001821", fetcher=fetcher)
+
+    assert calls == [{"symbol": "001821"}]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("fund", "001821", "million_copies_income", "2026-06-07", 0.3571, "akshare"),
+        ("fund", "001821", "seven_day_annualized_yield", "2026-06-07", 1.342, "akshare"),
+    ]
+
+
 def test_normalize_index_dividend_yield_rows_prefers_documented_calculation_share_yield():
     frame = pd.DataFrame(
         {
@@ -1227,6 +1305,54 @@ def test_normalize_index_dividend_yield_rows_accepts_csindex_indicator_columns()
 
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "H30269", "dividend_yield", "2026-05-22", 4.82, "akshare"),
+    ]
+
+
+def test_normalize_funddb_index_dividend_yield_rows_parses_highcharts_series():
+    payload = {
+        "code": 200,
+        "data": {
+            "series": [
+                {
+                    "name": "平均值",
+                    "data": [[1452211200000, 4.73]],
+                },
+                {
+                    "name": "股息率",
+                    "data": [
+                        [1452211200000, 3.15],
+                        [1452297600000, None],
+                        [1452384000000, "3.18"],
+                    ],
+                }
+            ]
+        },
+    }
+
+    rows = normalize_funddb_index_dividend_yield_rows("000922", payload)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "000922", "dividend_yield", "2016-01-08", 3.15, "funddb"),
+        ("index", "000922", "dividend_yield", "2016-01-10", 3.18, "funddb"),
+    ]
+
+
+def test_merge_index_dividend_yield_rows_prefers_current_source_on_duplicate_dates():
+    historical_rows = [
+        DailyMetric("index", "000922", "dividend_yield", "2026-05-12", 3.8, "funddb"),
+        DailyMetric("index", "000922", "dividend_yield", "2026-05-13", 3.9, "funddb"),
+    ]
+    current_rows = [
+        DailyMetric("index", "000922", "dividend_yield", "2026-05-13", 4.1, "akshare"),
+        DailyMetric("index", "000922", "dividend_yield", "2026-05-14", 4.2, "akshare"),
+    ]
+
+    rows = merge_index_dividend_yield_rows(current_rows, historical_rows)
+
+    assert [(row.date, row.value, row.source) for row in rows] == [
+        ("2026-05-12", 3.8, "funddb"),
+        ("2026-05-13", 4.1, "akshare"),
+        ("2026-05-14", 4.2, "akshare"),
     ]
 
 
@@ -1298,6 +1424,71 @@ def test_fetch_index_dividend_yield_rows_filters_to_latest_date_on_or_before_que
     assert calls == [{"symbol": "000300"}]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("index", "000300", "dividend_yield", "2026-04-20", 3.2, "akshare"),
+    ]
+
+
+def test_fetch_index_dividend_yield_rows_combines_history_when_history_fetcher_is_provided():
+    def current_fetcher(**kwargs):
+        return pd.DataFrame({"日期": ["2026-05-13"], "股息率2": [4.1]})
+
+    def history_fetcher(code):
+        return [DailyMetric("index", code, "dividend_yield", "2016-01-08", 3.15, "funddb")]
+
+    rows = fetch_index_dividend_yield_rows(
+        "SH000922",
+        fetcher=current_fetcher,
+        history_fetcher=history_fetcher,
+    )
+
+    assert [(row.code, row.date, row.value, row.source) for row in rows] == [
+        ("000922", "2016-01-08", 3.15, "funddb"),
+        ("000922", "2026-05-13", 4.1, "akshare"),
+    ]
+
+
+def test_fetch_index_dividend_yield_history_rows_uses_funddb_payload_fetcher():
+    calls = []
+
+    def fetcher(params):
+        calls.append(params)
+        return {
+            "data": {
+                "series": [
+                    {"name": "股息率", "data": [[1452211200000, 3.15]]},
+                ]
+            }
+        }
+
+    rows = fetch_index_dividend_yield_history_rows("SH000922", fetcher=fetcher)
+
+    assert calls == [{"gu_code": "000922.CSI", "pe_category": "xilv", "year": "10", "ver": "new"}]
+    assert [(row.code, row.date, row.value, row.source) for row in rows] == [
+        ("000922", "2016-01-08", 3.15, "funddb"),
+    ]
+
+
+def test_fetch_index_dividend_yield_history_rows_falls_back_to_sh_suffix_for_000_codes():
+    calls = []
+
+    def fetcher(params):
+        calls.append(params)
+        if params["gu_code"] == "000016.CSI":
+            return {"data": {"tubiao": {}}}
+        return {
+            "data": {
+                "tubiao": {
+                    "series": [
+                        {"name": "股息率", "data": [[1452211200000, 2.15]]},
+                    ]
+                }
+            }
+        }
+
+    rows = fetch_index_dividend_yield_history_rows("000016", fetcher=fetcher)
+
+    assert [call["gu_code"] for call in calls] == ["000016.CSI", "000016.SH"]
+    assert [(row.code, row.date, row.value, row.source) for row in rows] == [
+        ("000016", "2016-01-08", 2.15, "funddb"),
     ]
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from finance_cli.db import DailyMetric, FundInfo
+from finance_cli.db import DailyMetric, FundInfo, OperationFee
 from finance_cli.service import MetricQueryResult, MetricsService
 from finance_cli.sources import DataSourceError
 
@@ -58,8 +58,9 @@ class InMemoryMetricsRepository:
 
 
 class FakeFundInfoRepository:
-    def __init__(self, existing=None):
+    def __init__(self, existing=None, by_code=None):
         self.existing = existing
+        self.by_code = by_code
         self.initialize_calls = 0
         self.query_calls = []
         self.upserts = []
@@ -69,26 +70,50 @@ class FakeFundInfoRepository:
 
     def fund_info_by_code(self, code):
         self.query_calls.append(code)
+        if self.by_code is not None:
+            return self.by_code.get(code)
         return self.existing
+
+    def fund_info_codes(self):
+        if self.by_code is not None:
+            return list(self.by_code)
+        if self.existing is None:
+            return []
+        return [self.existing.code]
 
     def upsert_fund_info(self, fund_info):
         self.existing = fund_info
+        if self.by_code is not None:
+            self.by_code[fund_info.code] = fund_info
         self.upserts.append(fund_info)
         return 1
 
 
-def _fund_info(source="akshare", updated_at="2026-06-07T12:00:00+00:00"):
+def _fund_info(
+    code="017763",
+    name="银河领先债券C",
+    source="akshare",
+    updated_at="2026-06-07T12:00:00+00:00",
+    operation_fee=OperationFee(),
+    purchase_status="开放申购",
+    purchase_limit_amount=0,
+    redemption_status="开放赎回",
+    purchase_fee=None,
+    redemption_fee=None,
+):
     return FundInfo(
-        code="017763",
-        name="银河领先债券C",
+        code=code,
+        name=name,
         fund_type="债券型",
         established_date="2023-01-01",
         asset_size="10.25亿元",
-        purchase_status="开放申购",
-        redemption_status="开放赎回",
+        operation_fee=operation_fee,
+        purchase_status=purchase_status,
+        purchase_limit_amount=purchase_limit_amount,
+        redemption_status=redemption_status,
         morningstar_rating="5",
-        purchase_fee=[],
-        redemption_fee=[],
+        purchase_fee=[] if purchase_fee is None else purchase_fee,
+        redemption_fee=[] if redemption_fee is None else redemption_fee,
         source=source,
         updated_at=updated_at,
     )
@@ -176,6 +201,112 @@ def test_update_fund_info_initializes_and_upserts():
     assert result == fund_info
     assert repo.initialize_calls == 1
     assert repo.upserts == [fund_info]
+
+
+def test_sync_fund_info_refreshes_codes_and_records_important_changes():
+    cached = _fund_info(
+        operation_fee=OperationFee(
+            management_fee=0.003,
+            custodian_fee=0.001,
+            sales_service_fee=0.0,
+        ),
+        purchase_status="开放申购",
+        purchase_limit_amount=None,
+        purchase_fee=[],
+    )
+    fresh = _fund_info(
+        operation_fee=OperationFee(
+            management_fee=0.004,
+            custodian_fee=0.001,
+            sales_service_fee=0.0,
+        ),
+        purchase_status="暂停申购",
+        purchase_limit_amount=0,
+        purchase_fee=[
+            {
+                "min_amount": 0,
+                "max_amount": None,
+                "original_rate": 0.0,
+                "discounted_rate": 0.0,
+            }
+        ],
+        updated_at="2026-06-08T12:00:00+00:00",
+    )
+    repo = FakeFundInfoRepository(by_code={"017763": cached})
+    service = MetricsService(repo)
+
+    result = service.sync_fund_info(lambda code: fresh, max_workers=1)
+
+    assert result.total == 1
+    assert result.updated == 1
+    assert result.unchanged == 0
+    assert result.failures == []
+    assert repo.upserts == [fresh]
+    assert {change.field for change in result.successes[0].changes} == {
+        "operation_fee.management_fee",
+        "purchase_status",
+        "purchase_limit_amount",
+        "purchase_fee",
+    }
+
+
+def test_sync_fund_info_ignores_non_important_changes():
+    cached = _fund_info(name="旧名称", source="manual")
+    fresh = _fund_info(name="新名称", source="akshare", updated_at="2026-06-08T12:00:00+00:00")
+    repo = FakeFundInfoRepository(by_code={"017763": cached})
+    service = MetricsService(repo)
+
+    result = service.sync_fund_info(lambda code: fresh, max_workers=1)
+
+    assert result.total == 1
+    assert result.updated == 1
+    assert result.unchanged == 1
+    assert result.successes[0].changes == []
+
+
+def test_sync_fund_info_continues_after_single_fetch_failure():
+    first = _fund_info(code="017763")
+    second = _fund_info(code="008887", name="华夏国证半导体芯片ETF联接A")
+    fresh_second = _fund_info(
+        code="008887",
+        name="华夏国证半导体芯片ETF联接A",
+        redemption_status="暂停赎回",
+    )
+    repo = FakeFundInfoRepository(by_code={"017763": first, "008887": second})
+    service = MetricsService(repo)
+
+    def fetcher(code):
+        if code == "017763":
+            raise DataSourceError("source failed")
+        return fresh_second
+
+    result = service.sync_fund_info(fetcher, max_workers=1)
+
+    assert result.total == 2
+    assert result.updated == 1
+    assert repo.upserts == [fresh_second]
+    assert [(failure.code, failure.error) for failure in result.failures] == [
+        ("017763", "source failed")
+    ]
+    assert result.successes[0].code == "008887"
+
+
+def test_sync_fund_info_empty_table_does_not_fetch():
+    repo = FakeFundInfoRepository(by_code={})
+    service = MetricsService(repo)
+    called = False
+
+    def fetcher(code):
+        nonlocal called
+        called = True
+        return _fund_info(code=code)
+
+    result = service.sync_fund_info(fetcher, max_workers=1)
+
+    assert result.total == 0
+    assert result.updated == 0
+    assert result.failures == []
+    assert called is False
 
 
 def test_query_falls_back_to_previous_available_date_and_excludes_future_rows(tmp_path):
