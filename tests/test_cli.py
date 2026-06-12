@@ -68,6 +68,7 @@ def test_cli_help_shows_commands():
     assert "fund-info-update" in result.output
     assert "cn10y-yield" in result.output
     assert "gold" in result.output
+    assert "erp" in result.output
     assert "sync" in result.output
 
 
@@ -2111,6 +2112,137 @@ def test_sync_dividend_yield_spread_outputs_inserted_count(monkeypatch):
     monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
 
     result = runner.invoke(app, ["sync", "dividend-yield-spread", "--code", "000300"])
+
+    assert result.exit_code == 0
+    assert "同步 2000 条记录" in result.output
+
+
+def test_erp_command_outputs_json(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        assert ensure_lookback_coverage is True
+        assert minimum_lookback_years == 3
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.5, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        if metric == "rolling_pe":
+            return [DailyMetric("index", code, metric, "2026-05-29", 20.0, "akshare")]
+        if metric == "yield":
+            return [DailyMetric("bond", "CN10Y", metric, "2026-05-29", 2.5, "akshare")]
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["erp", "--code", "000300", "--years", "5", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "spread"
+    assert payload["code"] == "000300"
+    assert payload["metric"] == "erp"
+    assert payload["value"] == 2.5
+    assert payload["percentile"] == 35.0
+    assert payload["lookback_years"] == 5
+    assert payload["pe_ttm"] == 20.0
+    assert payload["earnings_yield"] == 5.0
+    assert payload["cn10y_yield"] == 2.5
+
+
+def test_erp_command_outputs_text(monkeypatch):
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.5, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        if metric == "rolling_pe":
+            return [DailyMetric("index", code, metric, "2026-05-29", 20.0, "akshare")]
+        if metric == "yield":
+            return [DailyMetric("bond", "CN10Y", metric, "2026-05-29", 2.5, "akshare")]
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["erp", "--code", "000300", "--years", "5"])
+
+    assert result.exit_code == 0
+    assert "利差: 000300" in result.output
+    assert "股债利差（ERP）: 2.5" in result.output
+    assert "历史百分位: 35.0%" in result.output
+    assert "回看年数: 5" in result.output
+    assert "PE_TTM: 20.0" in result.output
+    assert "盈利收益率: 5.0" in result.output
+    assert "10年期国债收益率: 2.5" in result.output
+
+
+def test_erp_command_normalizes_exchange_prefixed_code(monkeypatch):
+    seen_code = {}
+
+    def query(
+        self, asset_type, code, metric, requested_date, years, fetch_missing,
+        ensure_lookback_coverage=False, minimum_lookback_years=None,
+    ):
+        seen_code["code"] = code
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-05-29", "2020-01-02", 2.5, 35.0, 1500,
+            "akshare", years,
+        )
+
+    def metrics_between(self, asset_type, code, metric, start_date, end_date):
+        return []
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+    monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
+
+    result = runner.invoke(app, ["erp", "--code", "SH000300", "--json"])
+
+    assert result.exit_code == 0
+    assert seen_code["code"] == "000300"
+
+
+def test_erp_range_command_outputs_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-01-02", "2026-04-30",
+            [("2026-04-30", 2.5, "akshare")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(
+        app,
+        ["erp", "--code", "000300", "--from", "2026-01-01", "--to", "2026-05-01", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "spread", "code": "000300", "metric": "erp"}
+
+
+def test_sync_erp_outputs_inserted_count(monkeypatch):
+    def sync(self, fetch_rows):
+        return 2000
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "erp", "--code", "000300"])
 
     assert result.exit_code == 0
     assert "同步 2000 条记录" in result.output

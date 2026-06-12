@@ -7,9 +7,11 @@ import pytest
 from finance_cli.sources import (
     DataSourceError,
     compute_dividend_yield_spread_rows,
+    compute_erp_rows,
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
     fetch_dividend_yield_spread_rows,
+    fetch_erp_rows,
     fetch_gold_rows,
     fetch_gold_m2_ratio_rows,
     fetch_gold_usd_rows,
@@ -1959,3 +1961,87 @@ def test_fetch_dividend_yield_spread_rows_orchestrates_both_sources(monkeypatch)
     assert rows[0].code == "H30269"
     assert rows[0].metric == "dividend_yield_spread"
     assert abs(rows[0].value - 2.8) < 0.01
+
+
+# --- ERP compute tests ---
+
+
+def test_compute_erp_rows_uses_pe_earnings_yield_minus_cn10y():
+    pe_rows = [
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-02", 20.0, "akshare"),
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-03", 25.0, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 2.5, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-03", 2.7, "akshare"),
+    ]
+
+    rows = compute_erp_rows(pe_rows, cn10y_rows)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, round(row.value, 2), row.source) for row in rows] == [
+        ("spread", "000300", "erp", "2025-01-02", 2.50, "akshare"),
+        ("spread", "000300", "erp", "2025-01-03", 1.30, "akshare"),
+    ]
+
+
+def test_compute_erp_rows_skips_nonmatching_dates_and_nonpositive_pe():
+    pe_rows = [
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-01", 20.0, "akshare"),
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-02", 0.0, "akshare"),
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-03", -5.0, "akshare"),
+        DailyMetric("index", "000300", "rolling_pe", "2025-01-04", 25.0, "akshare"),
+    ]
+    cn10y_rows = [
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 2.5, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-03", 2.6, "akshare"),
+        DailyMetric("bond", "CN10Y", "yield", "2025-01-04", 2.7, "akshare"),
+    ]
+
+    rows = compute_erp_rows(pe_rows, cn10y_rows)
+
+    assert len(rows) == 1
+    assert rows[0].date == "2025-01-04"
+    assert abs(rows[0].value - 1.3) < 0.01
+
+
+def test_compute_erp_rows_raises_on_empty_pe():
+    with pytest.raises(DataSourceError, match="No PE data"):
+        compute_erp_rows(
+            [],
+            [DailyMetric("bond", "CN10Y", "yield", "2025-01-01", 2.5, "akshare")],
+        )
+
+
+def test_compute_erp_rows_raises_on_empty_cn10y():
+    with pytest.raises(DataSourceError, match="No CN10Y yield data"):
+        compute_erp_rows(
+            [DailyMetric("index", "000300", "rolling_pe", "2025-01-01", 20.0, "akshare")],
+            [],
+        )
+
+
+def test_compute_erp_rows_raises_on_no_overlap():
+    with pytest.raises(DataSourceError, match="No overlapping dates"):
+        compute_erp_rows(
+            [DailyMetric("index", "000300", "rolling_pe", "2025-01-01", 20.0, "akshare")],
+            [DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 2.5, "akshare")],
+        )
+
+
+def test_fetch_erp_rows_orchestrates_pe_and_cn10y(monkeypatch):
+    def mock_pe(code):
+        return [DailyMetric("index", code, "rolling_pe", "2025-01-02", 20.0, "akshare")]
+
+    def mock_cn10y():
+        return [DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 2.5, "akshare")]
+
+    monkeypatch.setattr("finance_cli.sources.fetch_index_pe_rows", mock_pe)
+    monkeypatch.setattr("finance_cli.sources.fetch_cn10y_yield_rows", mock_cn10y)
+
+    rows = fetch_erp_rows("000300")
+
+    assert len(rows) == 1
+    assert rows[0].asset_type == "spread"
+    assert rows[0].code == "000300"
+    assert rows[0].metric == "erp"
+    assert abs(rows[0].value - 2.5) < 0.01

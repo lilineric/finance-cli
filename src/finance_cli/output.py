@@ -331,5 +331,6 @@ def _metric_label(metric: str) -> str:
         "money_supply": "M2货币供应量(十亿美元)",
         "ratio": "黄金/M2比值",
         "dividend_yield_spread": "股息率-国债收益率利差",
+        "erp": "股债利差（ERP）",
     }
     return labels.get(metric, metric)

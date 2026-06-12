@@ -2,7 +2,7 @@ import pytest
 
 from finance_cli.db import DailyMetric, FundInfo, OperationFee
 from finance_cli.service import MetricQueryResult, MetricsService
-from finance_cli.sources import DataSourceError
+from finance_cli.sources import DataSourceError, compute_erp_rows
 
 
 def fail_fetch():
@@ -855,6 +855,41 @@ def test_query_refreshes_stale_local_data_and_excludes_future_rows(tmp_path):
     assert result.value == 20.0
     assert result.percentile == 100.0
     assert result.sample_count == 2
+
+
+def test_query_erp_percentile_excludes_nonpositive_pe_rows(tmp_path):
+    repo = InMemoryMetricsRepository()
+    service = MetricsService(repo)
+
+    def fetch_erp():
+        return compute_erp_rows(
+            [
+                DailyMetric("index", "000300", "rolling_pe", "2025-01-01", 0.0, "akshare"),
+                DailyMetric("index", "000300", "rolling_pe", "2025-01-02", -10.0, "akshare"),
+                DailyMetric("index", "000300", "rolling_pe", "2025-01-03", 50.0, "akshare"),
+                DailyMetric("index", "000300", "rolling_pe", "2025-01-04", 25.0, "akshare"),
+            ],
+            [
+                DailyMetric("bond", "CN10Y", "yield", "2025-01-01", 1.0, "akshare"),
+                DailyMetric("bond", "CN10Y", "yield", "2025-01-02", 1.0, "akshare"),
+                DailyMetric("bond", "CN10Y", "yield", "2025-01-03", 1.0, "akshare"),
+                DailyMetric("bond", "CN10Y", "yield", "2025-01-04", 1.0, "akshare"),
+            ],
+        )
+
+    result = service.query(
+        asset_type="spread",
+        code="000300",
+        metric="erp",
+        requested_date="2025-01-04",
+        years=1,
+        fetch_missing=fetch_erp,
+    )
+
+    assert result.sample_start_date == "2025-01-03"
+    assert result.sample_count == 2
+    assert result.value == 3.0
+    assert result.percentile == 100.0
 
 
 def test_sync_initializes_repository_and_returns_upsert_count(tmp_path):

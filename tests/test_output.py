@@ -474,3 +474,15 @@ def test_format_text_includes_spread_labels():
     assert "股息率-国债收益率利差: 2.88" in text
     assert "历史百分位: 35.0%" in text
     assert "样本数: 1500" in text
+
+
+def test_format_text_includes_erp_label():
+    result = MetricQueryResult(
+        "spread", "000300", "erp", "2026-05-30", "2026-05-29",
+        "2020-01-02", 2.5, 35.0, 1500, "akshare", 5,
+    )
+
+    text = format_text(result)
+
+    assert "利差: 000300" in text
+    assert "股债利差（ERP）: 2.5" in text

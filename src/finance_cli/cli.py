@@ -34,9 +34,11 @@ from finance_cli.sources import (
     MONEY_FUND_ANNUALIZED_YIELD_METRIC,
     MONEY_FUND_INCOME_METRIC,
     compute_dividend_yield_spread_rows,
+    compute_erp_rows,
     compute_gold_m2_ratio_rows,
     fetch_cn10y_yield_rows,
     fetch_dividend_yield_spread_rows,
+    fetch_erp_rows,
     fetch_fund_info,
     fetch_money_fund_rows,
     fetch_gold_rows,
@@ -1022,6 +1024,83 @@ def dividend_yield_spread(
         typer.echo(text)
 
 
+@app.command()
+def erp(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    code: str = typer.Option(..., "--code"),
+    years: int | None = typer.Option(None, "--years"),
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query equity risk premium (1 / PE_TTM * 100 - CN10Y yield) percentile."""
+    try:
+        normalized_code = normalize_index_pe_code(code)
+
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date, years)
+            result = _service().query_range(
+                "spread",
+                normalized_code,
+                "erp",
+                requested_from,
+                requested_to,
+                lambda: fetch_erp_rows(normalized_code),
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        years = _default_years(years)
+        validate_years(years)
+
+        service = _service()
+
+        def fetch_spread():
+            pe_rows = list(fetch_index_pe_rows(normalized_code))
+            service.repository.upsert_metrics(pe_rows)
+            cn10y_rows = list(fetch_cn10y_yield_rows())
+            service.repository.upsert_metrics(cn10y_rows)
+            return compute_erp_rows(pe_rows, cn10y_rows)
+
+        result = service.query(
+            "spread",
+            normalized_code,
+            "erp",
+            query_date,
+            years,
+            fetch_spread,
+            ensure_lookback_coverage=True,
+            minimum_lookback_years=3,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    pe_ttm = _lookup_value(service, "index", normalized_code, "rolling_pe", result.actual_date)
+    cn10y = _lookup_value(service, "bond", "CN10Y", "yield", result.actual_date)
+    earnings_yield = _earnings_yield(pe_ttm)
+    if json_output:
+        payload = json.loads(format_json(result))
+        if pe_ttm is not None:
+            payload["pe_ttm"] = pe_ttm
+        if earnings_yield is not None:
+            payload["earnings_yield"] = earnings_yield
+        if cn10y is not None:
+            payload["cn10y_yield"] = cn10y
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        text = format_text(result)
+        if pe_ttm is not None:
+            text += f"\nPE_TTM: {pe_ttm}"
+        if earnings_yield is not None:
+            text += f"\n盈利收益率: {earnings_yield}"
+        if cn10y is not None:
+            text += f"\n10年期国债收益率: {cn10y}"
+        typer.echo(text)
+
+
 @sync_app.command("pe")
 def sync_pe(code: str = typer.Option(..., "--code")) -> None:
     """Synchronize index rolling PE history."""
@@ -1199,6 +1278,29 @@ def sync_dividend_yield_spread(code: str = typer.Option(..., "--code")) -> None:
     typer.echo(f"同步 {inserted} 条记录")
 
 
+@sync_app.command("erp")
+def sync_erp(code: str = typer.Option(..., "--code")) -> None:
+    """Synchronize ERP history (also syncs index PE and CN10Y data)."""
+    try:
+        normalized_code = normalize_index_pe_code(code)
+        service = _service()
+
+        def fetch_all():
+            pe_rows = list(fetch_index_pe_rows(normalized_code))
+            service.repository.upsert_metrics(pe_rows)
+            cn10y_rows = list(fetch_cn10y_yield_rows())
+            service.repository.upsert_metrics(cn10y_rows)
+            return compute_erp_rows(pe_rows, cn10y_rows)
+
+        inserted = service.sync(fetch_all)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
 def _format_fund_info_changes(success: object) -> str:
     changes = [
         f"{change.label} {_format_fund_info_change_value(change.field, change.old)} -> "
@@ -1228,6 +1330,12 @@ def _lookup_value(
     """Look up a single metric value from the repository on a given date."""
     rows = service.repository.metrics_between(asset_type, code, metric, query_date, query_date)
     return rows[0].value if rows else None
+
+
+def _earnings_yield(pe_ttm: float | None) -> float | None:
+    if pe_ttm is None or pe_ttm <= 0:
+        return None
+    return 100 / pe_ttm
 
 
 def _validate_sw_category(category: str) -> None:

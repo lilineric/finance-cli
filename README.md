@@ -128,6 +128,15 @@ Query China 10-year government bond yield percentile:
 finance cn10y-yield --date 2026-04-20 --years 10
 ```
 
+Query equity risk premium (ERP) percentile:
+
+```bash
+finance erp --code 000300 --date 2026-04-20 --years 10
+```
+
+ERP uses `(1 / PE_TTM) * 100 - China 10-year government bond yield`.
+ERP history excludes dates where `PE_TTM <= 0` before percentile calculation.
+
 Query US M2 money supply (no percentile, monthly, billions of USD):
 
 ```bash
@@ -169,6 +178,7 @@ Query date ranges:
 ```bash
 finance pe --code 000300 --from 2026-01-01 --to 2026-05-01 --json
 finance dividend-yield --code 000300 --from 2026-01-01 --to 2026-05-01 --json
+finance erp --code 000300 --from 2026-01-01 --to 2026-05-01 --json
 finance pb --code 930707 --from 2026-01-01 --to 2026-05-01 --json
 finance pb --code 801010 --category 一级行业 --from 2026-01-01 --to 2026-05-01 --json
 finance gold --from 2026-01-01 --to 2026-05-01 --json
@@ -189,6 +199,7 @@ Manually synchronize data:
 ```bash
 finance sync pe --code 000300
 finance sync dividend-yield --code 000300
+finance sync erp --code 000300
 finance sync pb --code 801010 --category 一级行业
 finance sync gold
 finance sync fund-info

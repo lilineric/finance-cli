@@ -1789,3 +1789,61 @@ def fetch_dividend_yield_spread_rows(code: str) -> list[DailyMetric]:
     div_rows = fetch_index_dividend_yield_rows(code)
     cn10y_rows = fetch_cn10y_yield_rows()
     return compute_dividend_yield_spread_rows(div_rows, cn10y_rows)
+
+
+def compute_erp_rows(
+    pe_rows: list[DailyMetric],
+    cn10y_rows: list[DailyMetric],
+) -> list[DailyMetric]:
+    """Compute ERP as (1 / PE_TTM) * 100 - CN10Y yield for each matching date.
+
+    Nonpositive PE_TTM rows are skipped before ERP samples are stored or ranked.
+    """
+    if not pe_rows:
+        raise DataSourceError("No PE data available for ERP computation")
+    if not cn10y_rows:
+        raise DataSourceError("No CN10Y yield data available for ERP computation")
+
+    pe_sorted = sorted(pe_rows, key=lambda r: r.date)
+    cn10y_sorted = sorted(cn10y_rows, key=lambda r: r.date)
+
+    rows: list[DailyMetric] = []
+    i = 0
+    j = 0
+
+    while i < len(pe_sorted) and j < len(cn10y_sorted):
+        pe_date = pe_sorted[i].date
+        cn10y_date = cn10y_sorted[j].date
+
+        if pe_date == cn10y_date:
+            pe_value = pe_sorted[i].value
+            if pe_value > 0:
+                earnings_yield = 100 / pe_value
+                rows.append(
+                    DailyMetric(
+                        "spread",
+                        pe_sorted[i].code,
+                        "erp",
+                        pe_date,
+                        earnings_yield - cn10y_sorted[j].value,
+                        "akshare",
+                    )
+                )
+            i += 1
+            j += 1
+        elif pe_date < cn10y_date:
+            i += 1
+        else:
+            j += 1
+
+    if not rows:
+        raise DataSourceError("No overlapping dates between PE and CN10Y data for ERP computation")
+
+    return rows
+
+
+def fetch_erp_rows(code: str) -> list[DailyMetric]:
+    """Fetch ERP by combining index PE_TTM and CN10Y yield data."""
+    pe_rows = fetch_index_pe_rows(code)
+    cn10y_rows = fetch_cn10y_yield_rows()
+    return compute_erp_rows(pe_rows, cn10y_rows)
