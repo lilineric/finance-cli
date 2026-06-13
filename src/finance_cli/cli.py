@@ -46,10 +46,13 @@ from finance_cli.sources import (
     fetch_gold_usd_rows,
     fetch_fund_nav_rows,
     fetch_index_dividend_yield_rows,
+    fetch_index_value_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
     fetch_m2_rows,
+    fetch_us10y_tips_yield_rows,
     normalize_index_pe_code,
+    normalize_index_value_code,
     normalize_csindex_code,
     fetch_sw_index_pb_rows,
     normalize_fund_code,
@@ -551,6 +554,46 @@ def dividend_yield(
     typer.echo(format_json(result) if json_output else format_text(result))
 
 
+@app.command("index")
+def index_value(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    code: str = typer.Option(..., "--code"),
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query index value."""
+    try:
+        normalized_code = normalize_index_value_code(code)
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date)
+            result = _service().query_range(
+                "index",
+                normalized_code,
+                "price_index",
+                requested_from,
+                requested_to,
+                lambda: fetch_index_value_rows(normalized_code),
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        result = _service().query_value(
+            "index",
+            normalized_code,
+            "price_index",
+            query_date,
+            lambda: fetch_index_value_rows(normalized_code),
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
 @app.command("fund-info")
 def fund_info(
     code: str = typer.Option(..., "--code"),
@@ -803,6 +846,48 @@ def cn10y_yield(
             query_date,
             years,
             fetch_cn10y_yield_rows,
+        )
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(format_json(result) if json_output else format_text(result))
+
+
+@app.command("us10y-tips")
+def us10y_tips(
+    query_date: Annotated[str | None, typer.Option("--date")] = None,
+    years: int | None = typer.Option(None, "--years"),
+    from_date: str | None = typer.Option(None, "--from"),
+    to_date: str | None = typer.Option(None, "--to"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Query US 10-year TIPS real-yield percentile."""
+    try:
+        if _is_range_mode(from_date, to_date):
+            requested_from, requested_to = _validate_range_options(from_date, to_date, query_date, years)
+            result = _service().query_range(
+                "bond",
+                "US10Y_TIPS",
+                "yield",
+                requested_from,
+                requested_to,
+                fetch_us10y_tips_yield_rows,
+            )
+            typer.echo(format_range_json(result) if json_output else format_range_text(result))
+            return
+
+        query_date = _default_query_date(query_date)
+        years = _default_years(years)
+        validate_years(years)
+        result = _service().query(
+            "bond",
+            "US10Y_TIPS",
+            "yield",
+            query_date,
+            years,
+            fetch_us10y_tips_yield_rows,
         )
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc
@@ -1134,6 +1219,20 @@ def sync_dividend_yield(code: str = typer.Option(..., "--code")) -> None:
     typer.echo(f"同步 {inserted} 条记录")
 
 
+@sync_app.command("index")
+def sync_index_value(code: str = typer.Option(..., "--code")) -> None:
+    """Synchronize index value history."""
+    try:
+        normalized_code = normalize_index_value_code(code)
+        inserted = _service().sync(lambda: fetch_index_value_rows(normalized_code))
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
 @sync_app.command("pb")
 def sync_pb(
     code: str = typer.Option(..., "--code"),
@@ -1193,6 +1292,19 @@ def sync_cn10y_yield() -> None:
     """Synchronize China 10-year government bond yield history."""
     try:
         inserted = _service().sync(fetch_cn10y_yield_rows)
+    except (DataSourceError, SQLiteApiError) as exc:
+        raise _runtime_click_exception(exc) from exc
+    except ValueError as exc:
+        raise _value_click_exception(exc) from exc
+
+    typer.echo(f"同步 {inserted} 条记录")
+
+
+@sync_app.command("us10y-tips")
+def sync_us10y_tips() -> None:
+    """Synchronize US 10-year TIPS real-yield history."""
+    try:
+        inserted = _service().sync(fetch_us10y_tips_yield_rows)
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc
     except ValueError as exc:

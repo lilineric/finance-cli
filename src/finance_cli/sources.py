@@ -5,6 +5,7 @@ from io import StringIO
 import json
 from numbers import Integral, Real
 import re
+import xml.etree.ElementTree as ET
 from typing import Callable
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -101,7 +102,16 @@ FED_H6_MONTHLY_URL = (
     "?rel=H6&series=798e2796917702a5f8423426ba7e6b42"
     "&lastobs=&from=&to=&filetype=csv&label=include&layout=seriescolumn"
 )
+TREASURY_REAL_YIELD_CURVE_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+    "?data=daily_treasury_real_yield_curve&field_tdr_date_value=all&page={page}"
+)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+TRENDFORCE_IMCI_URL = (
+    "https://datatrack-finwhale.trendforce.com:8000/api/v1/data/column"
+    "?fields=3271&cult=zh-TW"
+)
+INDEX_VALUE_CODES: frozenset[str] = frozenset({"IMCI"})
 
 
 class DataSourceError(RuntimeError):
@@ -232,6 +242,18 @@ def fetch_index_dividend_yield_history_rows(
     ) from last_error
 
 
+def fetch_index_value_rows(
+    code: str,
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    normalized_code = normalize_index_value_code(code)
+    try:
+        text = fetcher(TRENDFORCE_IMCI_URL) if fetcher is not None else _fetch_text(TRENDFORCE_IMCI_URL)
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch index value rows for {code}: {exc}") from exc
+    return normalize_index_value_rows(normalized_code, text)
+
+
 def _funddb_index_code_candidates(normalized_code: str) -> list[str]:
     if normalized_code.startswith("H"):
         return [f"{normalized_code.lower()}.CSI", f"{normalized_code}.CSI"]
@@ -280,6 +302,13 @@ def normalize_index_pe_code(code: str) -> str:
     if normalized in DANJUAN_GLOBAL_PE_INDEX_CODES or normalized in WORLDPERATIO_PE_URLS:
         return normalized
     return normalize_csindex_code(code)
+
+
+def normalize_index_value_code(code: str) -> str:
+    normalized = code.strip().upper()
+    if normalized not in INDEX_VALUE_CODES:
+        raise DataSourceError(f"Invalid index value code: {code}")
+    return normalized
 
 
 def fetch_sw_index_pb_rows(
@@ -638,6 +667,23 @@ def _timestamp_ms_to_shanghai_date(value: object) -> str:
     return datetime.fromtimestamp(_to_float(value) / 1000, tz=SHANGHAI_TZ).date().isoformat()
 
 
+def _iso_timestamp_to_shanghai_date(value: object) -> str:
+    if not isinstance(value, str):
+        raise DataSourceError(f"Invalid timestamp value: {value!r}")
+    timestamp = value.strip()
+    if not timestamp:
+        raise DataSourceError(f"Invalid timestamp value: {value!r}")
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError as exc:
+        raise DataSourceError(f"Invalid timestamp value: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(SHANGHAI_TZ).date().isoformat()
+
+
 def normalize_index_dividend_yield_rows(code: str, frame: pd.DataFrame) -> list[DailyMetric]:
     date_column = _first_existing_column(frame, INDEX_PE_DATE_COLUMNS)
     value_column = _first_existing_column(frame, INDEX_DIVIDEND_YIELD_VALUE_COLUMNS)
@@ -858,6 +904,44 @@ def normalize_gold_rows(frame: pd.DataFrame) -> list[DailyMetric]:
         )
         for _, row in frame.iterrows()
     ]
+
+
+def normalize_index_value_rows(code: str, text: str) -> list[DailyMetric]:
+    normalized_code = normalize_index_value_code(code)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DataSourceError(f"Invalid JSON response for index value {normalized_code}") from exc
+
+    series_payload = None
+    for value in payload.values():
+        if isinstance(value, dict) and str(value.get("indicator_id", "")) == "3271":
+            series_payload = value
+            break
+    if series_payload is None:
+        series_payload = payload.get("上期所有色金屬價格指數(IMCI)")
+    if not isinstance(series_payload, dict):
+        raise DataSourceError(f"No index value data found for {normalized_code}")
+
+    series = series_payload.get("data")
+    if not isinstance(series, dict) or not series:
+        raise DataSourceError(f"No index value data found for {normalized_code}")
+
+    rows = [
+        DailyMetric(
+            "index",
+            normalized_code,
+            "price_index",
+            _iso_timestamp_to_shanghai_date(row_date),
+            _to_float(value),
+            "trendforce",
+        )
+        for row_date, value in series.items()
+        if not _is_missing(value)
+    ]
+    if not rows:
+        raise DataSourceError(f"No index value data found for {normalized_code}")
+    return sorted(rows, key=lambda row: row.date)
 
 
 def normalize_cn10y_yield_rows(frame: pd.DataFrame) -> list[DailyMetric]:
@@ -1611,6 +1695,65 @@ def fetch_m2_rows(
     except Exception as exc:
         raise DataSourceError(f"Failed to fetch M2 data from Federal Reserve: {exc}") from exc
     return _parse_fed_h6_csv(text)
+
+
+def fetch_us10y_tips_yield_rows(
+    fetcher: Callable[[str], str] | None = None,
+) -> list[DailyMetric]:
+    """Fetch US 10-year TIPS real yield from Treasury real yield curve data."""
+    text_fetcher = fetcher if fetcher is not None else _fetch_text
+    rows_by_date: dict[str, DailyMetric] = {}
+    page = 0
+
+    try:
+        while True:
+            text = text_fetcher(TREASURY_REAL_YIELD_CURVE_URL.format(page=page))
+            page_rows, has_entries = _parse_treasury_real_yield_xml(text)
+            if not has_entries:
+                break
+            for row in page_rows:
+                rows_by_date[row.date] = row
+            page += 1
+    except DataSourceError:
+        raise
+    except Exception as exc:
+        raise DataSourceError(f"Failed to fetch US10Y TIPS yield data from Treasury: {exc}") from exc
+
+    rows = [rows_by_date[date_key] for date_key in sorted(rows_by_date)]
+    if not rows:
+        raise DataSourceError("No valid US10Y TIPS yield data parsed from Treasury response")
+    return rows
+
+
+def _parse_treasury_real_yield_xml(text: str) -> tuple[list[DailyMetric], bool]:
+    root = ET.fromstring(text)
+    entries = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+    if not entries:
+        return [], False
+
+    rows: list[DailyMetric] = []
+    for entry in entries:
+        date_element = entry.find(".//{http://schemas.microsoft.com/ado/2007/08/dataservices}NEW_DATE")
+        value_element = entry.find(".//{http://schemas.microsoft.com/ado/2007/08/dataservices}TC_10YEAR")
+        if date_element is None:
+            raise DataSourceError("NEW_DATE field not found in Treasury response")
+        if value_element is None:
+            raise DataSourceError("TC_10YEAR field not found in Treasury response")
+
+        value = value_element.text
+        if value is None or _is_missing(value) or str(value).strip() == "":
+            continue
+        rows.append(
+            DailyMetric(
+                "bond",
+                "US10Y_TIPS",
+                "yield",
+                _to_iso_date(date_element.text),
+                _to_float(value),
+                "treasury",
+            )
+        )
+    return rows, True
 
 
 def fetch_gold_usd_rows(

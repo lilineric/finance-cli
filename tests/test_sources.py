@@ -17,6 +17,7 @@ from finance_cli.sources import (
     fetch_gold_usd_rows,
     fetch_index_dividend_yield_rows,
     fetch_index_dividend_yield_history_rows,
+    fetch_index_value_rows,
     fetch_index_pb_rows,
     fetch_index_pe_rows,
     fetch_fund_info,
@@ -24,6 +25,7 @@ from finance_cli.sources import (
     fetch_money_fund_rows,
     fetch_fund_nav_rows,
     fetch_m2_rows,
+    fetch_us10y_tips_yield_rows,
     normalize_index_pe_code,
     normalize_ndx_pe_rows,
     fetch_sw_index_pb_rows,
@@ -38,6 +40,7 @@ from finance_cli.sources import (
     normalize_cn10y_yield_rows,
     normalize_gold_rows,
     normalize_index_dividend_yield_rows,
+    normalize_index_value_rows,
     normalize_funddb_index_dividend_yield_rows,
     merge_index_dividend_yield_rows,
     normalize_index_pe_rows,
@@ -129,6 +132,32 @@ def test_normalize_gold_rows_accepts_common_akshare_columns():
         ("gold", "AU9999", "close", "2026-04-17", 530.5, "akshare"),
         ("gold", "AU9999", "close", "2026-04-20", 535.2, "akshare"),
     ]
+
+
+def test_normalize_index_value_rows_accepts_trendforce_imci_json():
+    payload = {
+        "上期所有色金屬價格指數(IMCI)": {
+            "data": {
+                "2026-06-10T16:00:00.000Z": "5351.37",
+                "2026-06-11T16:00:00.000Z": "5410.94",
+            },
+            "data_source": "Shanghai Futures Exchange (Choice)",
+        }
+    }
+
+    rows = normalize_index_value_rows("IMCI", json.dumps(payload))
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "IMCI", "price_index", "2026-06-11", 5351.37, "trendforce"),
+        ("index", "IMCI", "price_index", "2026-06-12", 5410.94, "trendforce"),
+    ]
+
+
+def test_normalize_index_value_rows_rejects_missing_trendforce_data():
+    payload = {"上期所有色金屬價格指數(IMCI)": {"data": {}}}
+
+    with pytest.raises(DataSourceError, match="No index value data found for IMCI"):
+        normalize_index_value_rows("IMCI", json.dumps(payload))
 
 
 def test_normalize_fund_nav_rows_accepts_unit_nav_columns():
@@ -1215,6 +1244,26 @@ def test_fetch_gold_rows_uses_injected_fetcher_without_network():
     ]
 
 
+def test_fetch_index_value_rows_uses_injected_fetcher_for_imci():
+    seen = {}
+    payload = {
+        "上期所有色金屬價格指數(IMCI)": {
+            "data": {"2026-06-11T16:00:00.000Z": "5410.94"}
+        }
+    }
+
+    def fetcher(url):
+        seen["url"] = url
+        return json.dumps(payload)
+
+    rows = fetch_index_value_rows("imci", fetcher=fetcher)
+
+    assert "fields=3271" in seen["url"]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("index", "IMCI", "price_index", "2026-06-12", 5410.94, "trendforce"),
+    ]
+
+
 def test_fetch_fund_nav_rows_uses_unit_nav_indicator_by_default():
     calls = []
 
@@ -1624,6 +1673,149 @@ def test_fetch_cn10y_yield_rows_uses_injected_fetcher_without_network():
     assert calls == [{"start_date": "19901219"}]
     assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
         ("bond", "CN10Y", "yield", "2026-04-17", 1.7, "akshare"),
+    ]
+
+
+def test_fetch_us10y_tips_yield_rows_parses_treasury_xml():
+    def fetcher(url):
+        if url.endswith("page=1"):
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+        assert url.endswith("field_tdr_date_value=all&page=0")
+        return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-08T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.21</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-09T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.20</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+
+    rows = fetch_us10y_tips_yield_rows(fetcher=fetcher)
+
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("bond", "US10Y_TIPS", "yield", "2026-06-08", 2.21, "treasury"),
+        ("bond", "US10Y_TIPS", "yield", "2026-06-09", 2.20, "treasury"),
+    ]
+
+
+def test_fetch_us10y_tips_yield_rows_skips_missing_values():
+    def fetcher(url):
+        if url.endswith("page=1"):
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+        return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-08T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double"></d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-10T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.21</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+
+    rows = fetch_us10y_tips_yield_rows(fetcher=fetcher)
+
+    assert [(row.date, row.value) for row in rows] == [("2026-06-10", 2.21)]
+
+
+def test_fetch_us10y_tips_yield_rows_raises_on_missing_value_column():
+    def fetcher(url):
+        return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-10T00:00:00</d:NEW_DATE>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+
+    with pytest.raises(DataSourceError, match="TC_10YEAR field not found"):
+        fetch_us10y_tips_yield_rows(fetcher=fetcher)
+
+
+def test_fetch_us10y_tips_yield_rows_raises_on_empty_data():
+    def fetcher(url):
+        if url.endswith("page=1"):
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+        return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-08T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double"></d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+
+    with pytest.raises(DataSourceError, match="No valid US10Y TIPS yield data"):
+        fetch_us10y_tips_yield_rows(fetcher=fetcher)
+
+
+def test_fetch_us10y_tips_yield_rows_uses_injected_fetcher_without_network():
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        if url.endswith("page=0"):
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-10T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.21</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+        return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+
+    rows = fetch_us10y_tips_yield_rows(fetcher=fetcher)
+
+    assert calls == [
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_real_yield_curve&field_tdr_date_value=all&page=0",
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_real_yield_curve&field_tdr_date_value=all&page=1",
+    ]
+    assert [(row.asset_type, row.code, row.metric, row.date, row.value, row.source) for row in rows] == [
+        ("bond", "US10Y_TIPS", "yield", "2026-06-10", 2.21, "treasury"),
     ]
 
 

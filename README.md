@@ -36,6 +36,18 @@ finance dividend-yield --code H30269
 Index dividend-yield uses the CSIndex indicator `股息率2（计算用股本）D/P2` field.
 It returns the current value only; it does not calculate a historical percentile.
 
+Query index value:
+
+```bash
+finance index --code IMCI
+finance index --code IMCI --date 2026-06-13
+```
+
+`IMCI` is the Shanghai Futures Exchange nonferrous metals price index.
+It is sourced from TrendForce DataTrack's public Finwhale endpoint, whose page
+lists the source as `Shanghai Futures Exchange (Choice)`.
+It returns the current value only; it does not calculate a historical percentile.
+
 Query index PB value:
 
 ```bash
@@ -128,6 +140,14 @@ Query China 10-year government bond yield percentile:
 finance cn10y-yield --date 2026-04-20 --years 10
 ```
 
+Query US 10-year TIPS real-yield percentile:
+
+```bash
+finance us10y-tips --date 2026-06-10 --years 10
+```
+
+US 10-year TIPS data is sourced from U.S. Treasury Daily Treasury Par Real Yield Curve Rates field `TC_10YEAR`.
+
 Query equity risk premium (ERP) percentile:
 
 ```bash
@@ -178,11 +198,13 @@ Query date ranges:
 ```bash
 finance pe --code 000300 --from 2026-01-01 --to 2026-05-01 --json
 finance dividend-yield --code 000300 --from 2026-01-01 --to 2026-05-01 --json
+finance index --code IMCI --from 2026-01-01 --to 2026-05-01 --json
 finance erp --code 000300 --from 2026-01-01 --to 2026-05-01 --json
 finance pb --code 930707 --from 2026-01-01 --to 2026-05-01 --json
 finance pb --code 801010 --category 一级行业 --from 2026-01-01 --to 2026-05-01 --json
 finance gold --from 2026-01-01 --to 2026-05-01 --json
 finance cn10y-yield --from 2026-01-01 --to 2026-05-01 --json
+finance us10y-tips --from 2026-01-01 --to 2026-06-10 --json
 finance fund-nav --code 017763 --from 2026-01-01 --to 2026-05-01 --json
 finance fund-nav --code 017763 --nav-type accumulated --from 2026-01-01 --to 2026-05-01 --json
 finance m2 --from 2026-01-01 --to 2026-05-30 --json
@@ -199,11 +221,13 @@ Manually synchronize data:
 ```bash
 finance sync pe --code 000300
 finance sync dividend-yield --code 000300
+finance sync index --code IMCI
 finance sync erp --code 000300
 finance sync pb --code 801010 --category 一级行业
 finance sync gold
 finance sync fund-info
 finance sync cn10y-yield
+finance sync us10y-tips
 finance sync m2
 finance sync gold-usd
 finance sync gold-m2-ratio

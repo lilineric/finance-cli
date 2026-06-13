@@ -329,6 +329,7 @@ def _metric_label(metric: str) -> str:
         "million_copies_income": "每万份收益",
         "seven_day_annualized_yield": "7日年化收益率",
         "money_supply": "M2货币供应量(十亿美元)",
+        "price_index": "价格指数",
         "ratio": "黄金/M2比值",
         "dividend_yield_spread": "股息率-国债收益率利差",
         "erp": "股债利差（ERP）",

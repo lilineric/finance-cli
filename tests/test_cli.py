@@ -67,6 +67,7 @@ def test_cli_help_shows_commands():
     assert "fund-info" in result.output
     assert "fund-info-update" in result.output
     assert "cn10y-yield" in result.output
+    assert "us10y-tips" in result.output
     assert "gold" in result.output
     assert "erp" in result.output
     assert "sync" in result.output
@@ -1100,6 +1101,32 @@ def test_cn10y_yield_command_outputs_json(monkeypatch, tmp_path):
     assert payload["metric"] == "yield"
 
 
+def test_us10y_tips_command_outputs_json(monkeypatch, tmp_path):
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-06-10",
+            "2020-01-02",
+            1.96,
+            65.0,
+            1500,
+            "treasury",
+            years,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["us10y-tips", "--date", "2026-06-10", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["code"] == "US10Y_TIPS"
+    assert payload["metric"] == "yield"
+
+
 def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
     def replace_sync(self, asset_type, code, metric, fetch_rows):
         return 3
@@ -1298,6 +1325,7 @@ def test_sync_new_metrics_output_inserted_count(monkeypatch, tmp_path):
         ["sync", "dividend-yield", "--code", "000300"],
         ["sync", "pb", "--code", "801010", "--category", "一级行业"],
         ["sync", "cn10y-yield"],
+        ["sync", "us10y-tips"],
     ]
     for command in commands:
         result = runner.invoke(app, command)
@@ -1518,6 +1546,31 @@ def test_cn10y_yield_command_outputs_range_json(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert seen == {"asset_type": "bond", "code": "CN10Y", "metric": "yield"}
+    assert json.loads(result.output)["metric"] == "yield"
+
+
+def test_us10y_tips_command_outputs_range_json(monkeypatch, tmp_path):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-06-10",
+            [("2026-06-10", 1.96, "treasury")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["us10y-tips", "--from", "2026-01-01", "--to", "2026-06-10", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "bond", "code": "US10Y_TIPS", "metric": "yield"}
     assert json.loads(result.output)["metric"] == "yield"
 
 
@@ -1751,6 +1804,64 @@ def test_m2_command_outputs_json(monkeypatch):
     assert "lookback_years" not in payload
 
 
+def test_index_command_outputs_imci_json(monkeypatch):
+    seen = {}
+
+    def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricQueryResult(
+            asset_type, code, metric, requested_date,
+            "2026-06-12", None, 5410.94, None, None, "trendforce", None,
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_value", query_value)
+
+    result = runner.invoke(app, ["index", "--code", "imci", "--date", "2026-06-13", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "index", "code": "IMCI", "metric": "price_index"}
+    payload = json.loads(result.output)
+    assert payload["asset_type"] == "index"
+    assert payload["code"] == "IMCI"
+    assert payload["metric"] == "price_index"
+    assert payload["value"] == 5410.94
+    assert "percentile" not in payload
+
+
+def test_index_command_outputs_imci_range_json(monkeypatch):
+    seen = {}
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        seen.update({"asset_type": asset_type, "code": code, "metric": metric})
+        return MetricRangeQueryResult(
+            asset_type, code, metric, requested_from, requested_to,
+            "2026-06-11", "2026-06-12",
+            [("2026-06-12", 5410.94, "trendforce")],
+        )
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["index", "--code", "IMCI", "--from", "2026-06-01", "--to", "2026-06-13", "--json"])
+
+    assert result.exit_code == 0
+    assert seen == {"asset_type": "index", "code": "IMCI", "metric": "price_index"}
+    payload = json.loads(result.output)
+    assert payload["data"] == [{"date": "2026-06-12", "value": 5410.94, "source": "trendforce"}]
+
+
+def test_index_command_rejects_unsupported_code():
+    result = runner.invoke(app, ["index", "--code", "bad", "--json"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "Invalid index value code: bad",
+        }
+    }
+
+
 def test_m2_command_outputs_text(monkeypatch):
     def query_value(self, asset_type, code, metric, requested_date, fetch_missing):
         return MetricQueryResult(
@@ -1906,6 +2017,18 @@ def test_sync_m2_outputs_inserted_count(monkeypatch):
     assert "同步 120 条记录" in result.output
 
 
+def test_sync_index_outputs_inserted_count_for_imci(monkeypatch):
+    def sync(self, fetch_rows):
+        return 3300
+
+    monkeypatch.setattr("finance_cli.service.MetricsService.sync", sync)
+
+    result = runner.invoke(app, ["sync", "index", "--code", "IMCI"])
+
+    assert result.exit_code == 0
+    assert "同步 3300 条记录" in result.output
+
+
 def test_sync_gold_usd_outputs_inserted_count(monkeypatch):
     def sync(self, fetch_rows):
         return 5000
@@ -1934,6 +2057,7 @@ def test_cli_help_shows_new_commands(monkeypatch):
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
+    assert "index" in result.output
     assert "m2" in result.output
     assert "gold-usd" in result.output
     assert "gold-m2-ratio" in result.output
