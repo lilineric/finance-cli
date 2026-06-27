@@ -6,7 +6,7 @@ import json
 from numbers import Integral, Real
 import re
 import xml.etree.ElementTree as ET
-from typing import Callable
+from typing import Callable, Iterable
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -104,7 +104,7 @@ FED_H6_MONTHLY_URL = (
 )
 TREASURY_REAL_YIELD_CURVE_URL = (
     "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
-    "?data=daily_treasury_real_yield_curve&field_tdr_date_value=all&page={page}"
+    "?data=daily_treasury_real_yield_curve&field_tdr_date_value={year}&page={page}"
 )
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
 TRENDFORCE_IMCI_URL = (
@@ -1699,21 +1699,26 @@ def fetch_m2_rows(
 
 def fetch_us10y_tips_yield_rows(
     fetcher: Callable[[str], str] | None = None,
+    years: Iterable[int] | None = None,
 ) -> list[DailyMetric]:
     """Fetch US 10-year TIPS real yield from Treasury real yield curve data."""
     text_fetcher = fetcher if fetcher is not None else _fetch_text
     rows_by_date: dict[str, DailyMetric] = {}
-    page = 0
+    year_filters = ("all",) if years is None else tuple(str(year) for year in sorted(set(years)))
 
     try:
-        while True:
-            text = text_fetcher(TREASURY_REAL_YIELD_CURVE_URL.format(page=page))
-            page_rows, has_entries = _parse_treasury_real_yield_xml(text)
-            if not has_entries:
-                break
-            for row in page_rows:
-                rows_by_date[row.date] = row
-            page += 1
+        for year_filter in year_filters:
+            page = 0
+            while True:
+                text = text_fetcher(TREASURY_REAL_YIELD_CURVE_URL.format(year=year_filter, page=page))
+                page_rows, has_entries = _parse_treasury_real_yield_xml(text)
+                if not has_entries:
+                    break
+                for row in page_rows:
+                    rows_by_date[row.date] = row
+                if years is not None:
+                    break
+                page += 1
     except DataSourceError:
         raise
     except Exception as exc:

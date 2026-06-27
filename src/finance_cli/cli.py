@@ -9,7 +9,7 @@ import click
 import typer
 from typer.core import TyperGroup
 
-from finance_cli.analytics import validate_years
+from finance_cli.analytics import parse_query_date, validate_years
 from finance_cli.config import load_config
 from finance_cli.db import FundInfo, MetricsRepository, OperationFee, SQLiteApiError
 from finance_cli.output import (
@@ -867,13 +867,16 @@ def us10y_tips(
     try:
         if _is_range_mode(from_date, to_date):
             requested_from, requested_to = _validate_range_options(from_date, to_date, query_date, years)
+            from_year = parse_query_date(requested_from).year
+            to_year = parse_query_date(requested_to).year
+            fetch_years = range(from_year, to_year + 1)
             result = _service().query_range(
                 "bond",
                 "US10Y_TIPS",
                 "yield",
                 requested_from,
                 requested_to,
-                fetch_us10y_tips_yield_rows,
+                lambda: fetch_us10y_tips_yield_rows(years=fetch_years),
             )
             typer.echo(format_range_json(result) if json_output else format_range_text(result))
             return
@@ -881,13 +884,15 @@ def us10y_tips(
         query_date = _default_query_date(query_date)
         years = _default_years(years)
         validate_years(years)
+        parsed_query_date = parse_query_date(query_date)
+        fetch_years = range(parsed_query_date.year - years, parsed_query_date.year + 1)
         result = _service().query(
             "bond",
             "US10Y_TIPS",
             "yield",
             query_date,
             years,
-            fetch_us10y_tips_yield_rows,
+            lambda: fetch_us10y_tips_yield_rows(years=fetch_years),
         )
     except (DataSourceError, SQLiteApiError) as exc:
         raise _runtime_click_exception(exc) from exc

@@ -1127,6 +1127,40 @@ def test_us10y_tips_command_outputs_json(monkeypatch, tmp_path):
     assert payload["metric"] == "yield"
 
 
+def test_us10y_tips_command_fetches_only_lookback_years(monkeypatch, tmp_path):
+    seen = {}
+
+    def fetch_us10y_tips_yield_rows(years=None):
+        seen["years"] = list(years)
+        return [DailyMetric("bond", "US10Y_TIPS", "yield", "2026-06-26", 2.18, "treasury")]
+
+    def query(self, asset_type, code, metric, requested_date, years, fetch_missing):
+        rows = list(fetch_missing())
+        seen["row_dates"] = [row.date for row in rows]
+        return MetricQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_date,
+            "2026-06-26",
+            "2016-06-27",
+            2.18,
+            80.0,
+            2500,
+            "treasury",
+            years,
+        )
+
+    monkeypatch.setattr("finance_cli.cli.fetch_us10y_tips_yield_rows", fetch_us10y_tips_yield_rows)
+    monkeypatch.setattr("finance_cli.service.MetricsService.query", query)
+
+    result = runner.invoke(app, ["us10y-tips", "--date", "2026-06-27", "--years", "10", "--json"])
+
+    assert result.exit_code == 0
+    assert seen["years"] == list(range(2016, 2027))
+    assert seen["row_dates"] == ["2026-06-26"]
+
+
 def test_sync_pe_outputs_inserted_count(monkeypatch, tmp_path):
     def replace_sync(self, asset_type, code, metric, fetch_rows):
         return 3
@@ -1572,6 +1606,37 @@ def test_us10y_tips_command_outputs_range_json(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert seen == {"asset_type": "bond", "code": "US10Y_TIPS", "metric": "yield"}
     assert json.loads(result.output)["metric"] == "yield"
+
+
+def test_us10y_tips_range_command_fetches_only_requested_years(monkeypatch, tmp_path):
+    seen = {}
+
+    def fetch_us10y_tips_yield_rows(years=None):
+        seen["years"] = list(years)
+        return [DailyMetric("bond", "US10Y_TIPS", "yield", "2026-06-26", 2.18, "treasury")]
+
+    def query_range(self, asset_type, code, metric, requested_from, requested_to, fetch_missing):
+        rows = list(fetch_missing())
+        seen["row_dates"] = [row.date for row in rows]
+        return MetricRangeQueryResult(
+            asset_type,
+            code,
+            metric,
+            requested_from,
+            requested_to,
+            "2026-01-02",
+            "2026-06-26",
+            [("2026-06-26", 2.18, "treasury")],
+        )
+
+    monkeypatch.setattr("finance_cli.cli.fetch_us10y_tips_yield_rows", fetch_us10y_tips_yield_rows)
+    monkeypatch.setattr("finance_cli.service.MetricsService.query_range", query_range)
+
+    result = runner.invoke(app, ["us10y-tips", "--from", "2026-01-01", "--to", "2026-06-27", "--json"])
+
+    assert result.exit_code == 0
+    assert seen["years"] == [2026]
+    assert seen["row_dates"] == ["2026-06-26"]
 
 
 def test_dividend_yield_command_outputs_range_json(monkeypatch, tmp_path):

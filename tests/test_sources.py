@@ -1819,6 +1819,53 @@ def test_fetch_us10y_tips_yield_rows_uses_injected_fetcher_without_network():
     ]
 
 
+def test_fetch_us10y_tips_yield_rows_filters_by_years():
+    calls = []
+
+    def fetcher(url):
+        calls.append(url)
+        if "field_tdr_date_value=2025" in url:
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2025-12-31T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.09</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+        if "field_tdr_date_value=2026" in url:
+            return """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-06-26T00:00:00</d:NEW_DATE>
+        <d:TC_10YEAR m:type="Edm.Double">2.18</d:TC_10YEAR>
+      </m:properties>
+    </content>
+  </entry>
+</feed>"""
+        raise AssertionError(f"unexpected URL: {url}")
+
+    rows = fetch_us10y_tips_yield_rows(fetcher=fetcher, years=[2026, 2025, 2026])
+
+    assert calls == [
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_real_yield_curve&field_tdr_date_value=2025&page=0",
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_real_yield_curve&field_tdr_date_value=2026&page=0",
+    ]
+    assert [(row.date, row.value) for row in rows] == [
+        ("2025-12-31", 2.09),
+        ("2026-06-26", 2.18),
+    ]
+
+
 # ── M2 / Gold USD / Ratio tests ──
 
 
