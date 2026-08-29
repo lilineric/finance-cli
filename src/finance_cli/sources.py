@@ -185,6 +185,7 @@ def fetch_index_dividend_yield_rows(
     history_fetcher: Callable[[str], list[DailyMetric]] | None = None,
     query_date: str | None = None,
     allow_history_failure: bool = False,
+    history_failure_cutoff_date: str | None = None,
 ) -> list[DailyMetric]:
     normalized_code = normalize_csindex_code(code)
     use_default_history_fetcher = fetcher is None and history_fetcher is None
@@ -209,7 +210,11 @@ def fetch_index_dividend_yield_rows(
         elif history_fetcher is not None:
             rows = merge_index_dividend_yield_rows(rows, history_fetcher(normalized_code))
     except DataSourceError:
-        if not (allow_history_failure and rows):
+        can_use_current_rows = allow_history_failure and bool(rows)
+        if can_use_current_rows and history_failure_cutoff_date is not None:
+            cutoff_date = parse_query_date(history_failure_cutoff_date).isoformat()
+            can_use_current_rows = any(row.date <= cutoff_date for row in rows)
+        if not can_use_current_rows:
             raise
 
     if query_date is None:

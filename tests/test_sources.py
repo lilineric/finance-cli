@@ -1513,13 +1513,35 @@ def test_fetch_index_dividend_yield_rows_allows_history_failure_when_current_row
         "000300",
         fetcher=current_fetcher,
         history_fetcher=history_fetcher,
-        query_date="2026-08-07",
         allow_history_failure=True,
+        history_failure_cutoff_date="2026-08-07",
     )
 
     assert [(row.code, row.date, row.value, row.source) for row in rows] == [
         ("000300", "2026-08-07", 3.2, "akshare"),
+        ("000300", "2026-08-08", 3.3, "akshare"),
     ]
+
+
+def test_fetch_index_dividend_yield_rows_raises_history_failure_when_current_rows_are_after_cutoff():
+    history_error = DataSourceError("history unavailable")
+
+    def current_fetcher(**kwargs):
+        return pd.DataFrame({"日期": ["2026-08-08"], "股息率2": [3.3]})
+
+    def history_fetcher(code):
+        raise history_error
+
+    with pytest.raises(DataSourceError) as exc_info:
+        fetch_index_dividend_yield_rows(
+            "000300",
+            fetcher=current_fetcher,
+            history_fetcher=history_fetcher,
+            allow_history_failure=True,
+            history_failure_cutoff_date="2026-08-07",
+        )
+
+    assert exc_info.value is history_error
 
 
 def test_fetch_index_dividend_yield_rows_raises_history_failure_by_default():
@@ -1539,6 +1561,67 @@ def test_fetch_index_dividend_yield_rows_raises_history_failure_by_default():
         )
 
     assert exc_info.value is history_error
+
+
+def test_fetch_index_dividend_yield_rows_raises_history_failure_when_current_rows_are_empty():
+    history_error = DataSourceError("history unavailable")
+
+    def current_fetcher(**kwargs):
+        return pd.DataFrame(columns=["日期", "股息率2"])
+
+    def history_fetcher(code):
+        raise history_error
+
+    with pytest.raises(DataSourceError) as exc_info:
+        fetch_index_dividend_yield_rows(
+            "000300",
+            fetcher=current_fetcher,
+            history_fetcher=history_fetcher,
+            allow_history_failure=True,
+        )
+
+    assert exc_info.value is history_error
+
+
+def test_fetch_index_dividend_yield_rows_does_not_catch_non_data_source_history_failure():
+    history_error = RuntimeError("unexpected history failure")
+
+    def current_fetcher(**kwargs):
+        return pd.DataFrame({"日期": ["2026-08-07"], "股息率2": [3.2]})
+
+    def history_fetcher(code):
+        raise history_error
+
+    with pytest.raises(RuntimeError) as exc_info:
+        fetch_index_dividend_yield_rows(
+            "000300",
+            fetcher=current_fetcher,
+            history_fetcher=history_fetcher,
+            allow_history_failure=True,
+        )
+
+    assert exc_info.value is history_error
+
+
+def test_fetch_index_dividend_yield_rows_keeps_full_history_when_history_fetch_succeeds():
+    def current_fetcher(**kwargs):
+        return pd.DataFrame({"日期": ["2026-08-08"], "股息率2": [3.3]})
+
+    def history_fetcher(code):
+        return [DailyMetric("index", code, "dividend_yield", "2016-01-08", 3.15, "funddb")]
+
+    rows = fetch_index_dividend_yield_rows(
+        "000300",
+        fetcher=current_fetcher,
+        history_fetcher=history_fetcher,
+        allow_history_failure=True,
+        history_failure_cutoff_date="2026-08-07",
+    )
+
+    assert [(row.code, row.date, row.value, row.source) for row in rows] == [
+        ("000300", "2016-01-08", 3.15, "funddb"),
+        ("000300", "2026-08-08", 3.3, "akshare"),
+    ]
 
 
 def test_fetch_index_dividend_yield_history_rows_uses_funddb_payload_fetcher():

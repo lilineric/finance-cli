@@ -1065,7 +1065,11 @@ def dividend_yield_spread(
         def fetch_spread():
             # Sync latest dividend yield from API (incremental update)
             fresh_div = list(
-                fetch_index_dividend_yield_rows(normalized_code, allow_history_failure=True)
+                fetch_index_dividend_yield_rows(
+                    normalized_code,
+                    allow_history_failure=True,
+                    history_failure_cutoff_date=query_date,
+                )
             )
             service.repository.upsert_metrics(fresh_div)
             # Read full dividend yield history from DB (may span years from past syncs)

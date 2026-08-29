@@ -2239,8 +2239,13 @@ def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monk
             "akshare", years,
         )
 
-    def fetch_dividend_rows(code, *, allow_history_failure=False):
-        fetched_calls.append((code, allow_history_failure))
+    def fetch_dividend_rows(
+        code,
+        *,
+        allow_history_failure=False,
+        history_failure_cutoff_date=None,
+    ):
+        fetched_calls.append((code, allow_history_failure, history_failure_cutoff_date))
         return [DailyMetric("index", code, "dividend_yield", "2016-01-08", 3.15, "funddb")]
 
     def fetch_cn10y_rows():
@@ -2262,10 +2267,20 @@ def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monk
     monkeypatch.setattr("finance_cli.db.MetricsRepository.upsert_metrics", upsert_metrics)
     monkeypatch.setattr("finance_cli.db.MetricsRepository.metrics_between", metrics_between)
 
-    result = runner.invoke(app, ["dividend-yield-spread", "--code", "SH000922", "--json"])
+    result = runner.invoke(
+        app,
+        [
+            "dividend-yield-spread",
+            "--code",
+            "SH000922",
+            "--date",
+            "2026-05-29",
+            "--json",
+        ],
+    )
 
     assert result.exit_code == 0
-    assert fetched_calls == [("000922", True)]
+    assert fetched_calls == [("000922", True, "2026-05-29")]
     assert [(row.asset_type, row.code, row.metric, row.date, row.source) for row in upserted] == [
         ("index", "000922", "dividend_yield", "2016-01-08", "funddb"),
         ("bond", "CN10Y", "yield", "2016-01-08", "akshare"),
