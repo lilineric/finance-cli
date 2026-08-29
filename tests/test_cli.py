@@ -2225,7 +2225,7 @@ def test_dividend_yield_spread_command_with_lowercase_h_code(monkeypatch):
 
 
 def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monkeypatch):
-    fetched_codes = []
+    fetched_calls = []
     upserted = []
 
     def query(
@@ -2239,8 +2239,8 @@ def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monk
             "akshare", years,
         )
 
-    def fetch_dividend_rows(code):
-        fetched_codes.append(code)
+    def fetch_dividend_rows(code, *, allow_history_failure=False):
+        fetched_calls.append((code, allow_history_failure))
         return [DailyMetric("index", code, "dividend_yield", "2016-01-08", 3.15, "funddb")]
 
     def fetch_cn10y_rows():
@@ -2265,7 +2265,7 @@ def test_dividend_yield_spread_command_fetches_combined_dividend_yield_rows(monk
     result = runner.invoke(app, ["dividend-yield-spread", "--code", "SH000922", "--json"])
 
     assert result.exit_code == 0
-    assert fetched_codes == ["000922"]
+    assert fetched_calls == [("000922", True)]
     assert [(row.asset_type, row.code, row.metric, row.date, row.source) for row in upserted] == [
         ("index", "000922", "dividend_yield", "2016-01-08", "funddb"),
         ("bond", "CN10Y", "yield", "2016-01-08", "akshare"),

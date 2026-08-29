@@ -184,6 +184,7 @@ def fetch_index_dividend_yield_rows(
     fetcher: Callable[..., pd.DataFrame] | None = None,
     history_fetcher: Callable[[str], list[DailyMetric]] | None = None,
     query_date: str | None = None,
+    allow_history_failure: bool = False,
 ) -> list[DailyMetric]:
     normalized_code = normalize_csindex_code(code)
     use_default_history_fetcher = fetcher is None and history_fetcher is None
@@ -201,11 +202,15 @@ def fetch_index_dividend_yield_rows(
         raise DataSourceError(f"Failed to fetch index dividend yield rows for {code}: {exc}") from exc
 
     rows = normalize_index_dividend_yield_rows(normalized_code, frame)
-    if use_default_history_fetcher:
-        history_rows = fetch_index_dividend_yield_history_rows(normalized_code)
-        rows = merge_index_dividend_yield_rows(rows, history_rows)
-    elif history_fetcher is not None:
-        rows = merge_index_dividend_yield_rows(rows, history_fetcher(normalized_code))
+    try:
+        if use_default_history_fetcher:
+            history_rows = fetch_index_dividend_yield_history_rows(normalized_code)
+            rows = merge_index_dividend_yield_rows(rows, history_rows)
+        elif history_fetcher is not None:
+            rows = merge_index_dividend_yield_rows(rows, history_fetcher(normalized_code))
+    except DataSourceError:
+        if not (allow_history_failure and rows):
+            raise
 
     if query_date is None:
         return rows
